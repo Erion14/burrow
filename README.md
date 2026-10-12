@@ -51,6 +51,11 @@ S25 (PWA) --HTTPS/WSS over tailnet--> tailscale serve
 
 ## Install
 
+On a laptop that is not the maintainer's, start with [SETUP.md](SETUP.md): it
+holds a prompt to hand to your own coding agent, which inspects the machine,
+asks for the allowlist and the sudo steps, adapts the host parts, and verifies
+the wake path at the end. The manual steps are below.
+
 ```bash
 git clone https://github.com/Erion14/burrow && cd burrow
 bun install
@@ -98,7 +103,8 @@ bun run start   # the server on 127.0.0.1:7470
 ```
 
 No test calls a model. `test/fake-omp.ts` speaks omp's RPC protocol over stdio
-and is the only faked port; see [CONTRIBUTING.md](CONTRIBUTING.md).
+and is the only faked port. [AGENTS.md](AGENTS.md) is what an agent working on
+Burrow needs to know; [SETUP.md](SETUP.md) is what an agent installing it needs.
 
 ## Security
 
