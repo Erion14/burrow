@@ -1,7 +1,7 @@
 # Burrow host setup
 
-Host-side pieces that keep the laptop reachable from the phone. No Burrow
-application code. Written for a Fedora laptop running Hyprland, `systemd --user`
+Host-side pieces that keep the host reachable from the phone. No Burrow
+application code. Written for a Fedora machine running Hyprland, `systemd --user`
 with linger enabled, and `tailscale serve` as the only entry point; on another
 setup take the parts that apply.
 
@@ -46,7 +46,7 @@ Restart hypridle afterwards (`pkill hypridle; hyprctl dispatch exec hypridle`) s
 
 Hand checks (PLAN.md build order step 1):
 
-1. Close the lid on the charger for over 15 minutes. The laptop must stay up.
+1. Close the lid on the charger for over 15 minutes. The host must stay up.
 2. Reboot. `/wake` must still answer over the tailnet.
 3. `remote.sh on` starts `burrow.service`; `remote.sh off` stops it (`systemctl --user is-active burrow.service`).
 4. On battery, lid close and the 15 minute idle still suspend.

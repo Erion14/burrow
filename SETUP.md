@@ -1,15 +1,15 @@
-# Setting Burrow up on your laptop
+# Setting Burrow up on your machine
 
 Hand it to your coding agent, or do it by hand.
 
 ## Give it to your agent
 
-Paste the prompt below into an agent that has shell access to the laptop (omp,
+Paste the prompt below into an agent that has shell access to the host (omp,
 Claude Code, Codex, whatever you run). It is written to inspect first, to ask
 before sudo, and to verify at the end instead of assuming.
 
 ```text
-Set up Burrow (https://github.com/Erion14/burrow) on this laptop so I can drive
+Set up Burrow (https://github.com/Erion14/burrow) on the host so I can drive
 omp agents from my phone over Tailscale, then verify it.
 
 Gather and report these facts before changing anything:
@@ -17,7 +17,7 @@ Gather and report these facts before changing anything:
    distro prefers, and tell me the command you used.
 2. `omp --version` and the absolute path of the omp binary. Burrow spawns
    `omp --mode rpc-ui`, one process per session.
-3. `tailscale status --json`: my laptop's login name (User[Self.UserID] ->
+3. `tailscale status --json`: the host's login name (User[Self.UserID] ->
    LoginName) and DNS name (Self.DNSName, without the trailing dot), and whether
    `OperatorUser` is my own user, since `tailscale serve` needs that to run
    without sudo.
@@ -38,7 +38,7 @@ Then do this:
 - Verify, and show me the output of each check:
   * `bun test` passes.
   * `systemctl --user is-active burrow-wake` says active.
-  * `GET https://<laptop>.<tailnet>.ts.net/wake` answers {"ok":true} with my
+  * `GET https://<host>.<tailnet>.ts.net/wake` answers {"ok":true} with my
     tailnet identity.
   * `curl http://127.0.0.1:7470/health` (no Tailscale-User-Login header) is 403.
   * `remote.sh on` starts burrow.service and `remote.sh off` stops it, while
@@ -55,7 +55,7 @@ than reading it.
 
 ## By hand
 
-1. **Requirements.** Bun 1.4+, `omp` on `PATH`, Tailscale on the laptop and the
+1. **Requirements.** Bun 1.4+, `omp` on `PATH`, Tailscale on the host and the
    phone with the same tailnet, `OperatorUser` set to your user, and Chrome on
    the phone.
 2. **Build.**
@@ -74,11 +74,11 @@ than reading it.
    two sudo commands it will not run (a logind drop-in and a GDM dconf key).
    Read `host/README.md` for what each piece does and what to skip on a different
    desktop.
-5. **Phone.** Open `https://<laptop>.<tailnet>.ts.net/` in Chrome, install it,
+5. **Phone.** Open `https://<host>.<tailnet>.ts.net/` in Chrome, install it,
    then turn Remote on. Burrow has to be running for that first load; after it
    the shell is cached and Turn ON works while Remote is off.
 
-## What Burrow assumes about the laptop
+## What Burrow assumes about the host
 
 - `systemd --user` with linger enabled, so `burrow-wake` starts at boot without a
   login and the phone always has something to wake.

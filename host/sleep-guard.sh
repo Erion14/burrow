@@ -4,7 +4,7 @@
 #   sleep-guard.sh on-ac                exit 0 on AC power, 1 on battery
 #   sleep-guard.sh --help               this text
 #
-# The one place that decides "may the laptop suspend now?" (hypridle, lid.sh).
+# The one place that decides "may the host suspend now?" (hypridle, lid.sh).
 
 set -uo pipefail
 

@@ -9,13 +9,13 @@
 # inhibitor, like GNOME does), because logind suspends the moment an external
 # display is unplugged while the lid is closed — which locks the screen.
 #
-#   dock monitor plugged in           laptop panel off, ONLY that monitor lit (see
+#   dock monitor plugged in           internal panel off, ONLY that monitor lit (see
 #                                     DOCK_MONITORS below). Fires once when it
 #                                     appears, so `display extend` afterwards sticks
 #                                     until the next replug. Unplug -> panel back on.
 #
-#   lid closed + external connected   laptop panel off, work on the external
-#   lid open, or no external          laptop panel on (windows move back to it)
+#   lid closed + external connected   internal panel off, work on the external
+#   lid open, or no external          internal panel on (windows move back to it)
 #   external unplugged, lid closed    wait LID_GRACE seconds for the lid to open,
 #                                     then suspend (the bag case still sleeps)
 #   lid closed, never docked          suspend right away, same as before
@@ -103,7 +103,7 @@ dock_output() {
     return 1
 }
 
-# External only: dock monitor at the origin, laptop panel off (same as `display external`).
+# External only: dock monitor at the origin, internal panel off (same as `display external`).
 dock_only() {
     # Panel off BEFORE the dock monitor takes the origin: both at 0x0 would overlap.
     hyprctl -q keyword monitor "$PANEL, disable"
@@ -116,7 +116,7 @@ sleep_now() {
     # Remote mode (remote.sh) keeps the machine up: lock only, never suspend.
     "$(dirname "$0")/remote.sh" active && return 0
     sleep 1
-    # On the charger the laptop stays up (lid closed, locked); on battery it suspends.
+    # On the charger the host stays up (lid closed, locked); on battery it suspends.
     "$(dirname "$0")/sleep-guard.sh" suspend-if-battery
 }
 

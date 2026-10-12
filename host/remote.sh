@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Remote mode: keep the laptop awake so it can be driven from the phone
+# Remote mode: keep the host awake so it can be driven from the phone
 # (Tailscale + SSH/mosh -> `herdr`).
 #
 #   remote.sh [toggle] [source]   toggle; source (keybind/waybar) is logged
@@ -32,7 +32,7 @@ on() {
     setsid -f systemd-inhibit --what=sleep --who="$WHO" \
         --why="Remote mode: reachable over Tailscale" --mode=block \
         sleep infinity >/dev/null 2>&1
-    notify "Remote mode ON" "Laptop will not suspend. $(ip4)"
+    notify "Remote mode ON" "The machine will not suspend. $(ip4)"
 }
 
 off() {
@@ -49,7 +49,7 @@ status() {
     if active; then
         printf '{"text":"\xf3\xb0\xa2\xb9 on","class":"on","tooltip":"Remote mode ON: no suspend\\nTailscale %s\\nClick to turn off"}\n' "$(ip4)"
     else
-        printf '{"text":"\xf3\xb0\xa2\xb9","class":"off","tooltip":"Remote mode off\\nClick to keep the laptop awake"}\n'
+        printf '{"text":"\xf3\xb0\xa2\xb9","class":"off","tooltip":"Remote mode off\\nClick to keep the host awake"}\n'
     fi
 }
 

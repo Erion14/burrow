@@ -12,7 +12,7 @@ within a week.
 - Both servers bind loopback only. `tailscale serve` is the single entry point,
   and it is never exposed with `tailscale funnel`.
 - Every request must carry a `Tailscale-User-Login` header equal to the
-  laptop's own tailnet login. A request that arrives straight at `127.0.0.1`
+  host's own tailnet login. A request that arrives straight at `127.0.0.1`
   has no such header and is refused.
 - Every state-changing request (POST, PUT, PATCH, DELETE) must also carry the
   Burrow `Origin`, and every WebSocket upgrade must carry it too. Without that
@@ -31,5 +31,5 @@ within a week.
   tailnet, whether or not Burrow runs. Burrow does not change the firewall.
 - The phone is trusted by tailnet identity alone. A passkey prompt on app open
   is a possible second factor and is not implemented yet.
-- `tools.approvalMode` comes from the laptop's omp config, so an agent started
-  from the phone runs commands with whatever approval setting the laptop uses.
+- `tools.approvalMode` comes from the host's omp config, so an agent started
+  from the phone runs commands with whatever approval setting the host uses.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install the Burrow host parts for this laptop. Idempotent.
+# Install the Burrow host parts for the host. Idempotent.
 #   install.sh              install user parts, set tailscale serve, print sudo steps
 #   install.sh --print-only only print what would run
 set -euo pipefail

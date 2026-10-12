@@ -29,7 +29,7 @@ First usable version: sessions, chat, dialogs and diff from the phone.
   Remote mode on through `/wake`.
 - Tailscale identity and Origin checks on every request and upgrade.
 - Repo allowlist, recent session files filtered by the header `cwd`, and an
-  "open at laptop" marker from a `/proc` scan.
+  "in use elsewhere" marker from a `/proc` scan.
 - ntfy alerts for "finished" and "needs your answer".
 - Host parts: `burrow-wake`, `remote.sh` integration, sleep guard, logind and
-  GDM settings that keep the laptop awake on the charger with the lid closed.
+  GDM settings that keep the host awake on the charger with the lid closed.
