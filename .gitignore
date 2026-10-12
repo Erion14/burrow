@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.log
 .tmp/
+
+# Local scratch: feature ideas and notes that never go into the public repo.
+IDEAS.md
+*.local.md
