@@ -1,0 +1,15 @@
+[Unit]
+Description=Burrow server (Remote mode ON only)
+
+[Service]
+ExecStart=%h/.bun/bin/bun %h/code/burrow/src/server/main.ts
+WorkingDirectory=%h/code/burrow
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=journal
+
+[Install]
+WantedBy=default.target

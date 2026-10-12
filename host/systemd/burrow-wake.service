@@ -1,0 +1,12 @@
+[Unit]
+Description=Burrow wake endpoint (always on)
+
+[Service]
+ExecStart=%h/.bun/bin/bun %h/code/burrow/src/wake/main.ts
+WorkingDirectory=%h/code/burrow
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

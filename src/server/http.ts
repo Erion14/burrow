@@ -1,0 +1,178 @@
+// The Burrow HTTP surface: a small JSON API, the WebSocket upgrade, and the
+// built phone app. Everything except the static shell sits behind the
+// Tailscale identity check.
+
+import { join, normalize, sep } from "node:path";
+import type { Server } from "bun";
+import type { ApiErrorBody, BootstrapResponse } from "../shared/protocol";
+import type { DiffResponse } from "../shared/types";
+import { authorizeRequest, denialResponse } from "./auth";
+import type { BurrowConfig } from "./config";
+import { listRepos, resolveRepo } from "./repos/allowlist";
+import type { SessionManagerPort } from "./sessions/port";
+import type { Hub, SocketData } from "./ws";
+
+export interface HttpServerOptions {
+	config: BurrowConfig;
+	manager: SessionManagerPort;
+	hub: Hub;
+	/** Diff of the working tree of a repo; throws with the git stderr text on failure. */
+	diff: (repoPath: string) => Promise<DiffResponse>;
+}
+
+/** Manager error codes that mean the session is held elsewhere; answered 409. */
+const CONFLICT_CODES: ReadonlySet<string> = new Set(["session_conflict", "open_at_laptop"]);
+
+function errorResponse(status: number, code: string, message: string, headers?: HeadersInit): Response {
+	const body: ApiErrorBody = { error: { code, message } };
+	return Response.json(body, { status, headers });
+}
+
+function errorText(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+async function readJsonObject(req: Request): Promise<Record<string, unknown> | null> {
+	try {
+		const value: unknown = await req.json();
+		return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+	} catch {
+		return null;
+	}
+}
+
+async function serveShell(webRoot: string, pathname: string): Promise<Response> {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(pathname);
+	} catch {
+		return errorResponse(400, "bad_request", "malformed path");
+	}
+	const rootDir = normalize(webRoot);
+	const target = normalize(join(rootDir, decoded));
+	if (target !== rootDir && !target.startsWith(rootDir + sep)) return errorResponse(404, "not_found", "no such file");
+
+	const index = Bun.file(join(rootDir, "index.html"));
+	if (!(await index.exists())) {
+		return new Response("The web bundle is not built; run `bun run build` first.\n", {
+			status: 503,
+			headers: { "content-type": "text/plain; charset=utf-8" },
+		});
+	}
+	const noCache = { "cache-control": "no-cache" };
+	if (decoded !== "/" && decoded !== "") {
+		const file = Bun.file(target);
+		if (target !== rootDir && (await file.exists())) {
+			const headers = decoded === "/sw.js" || decoded === "/index.html" ? noCache : undefined;
+			return new Response(file, { headers });
+		}
+		// A missing asset must not turn into HTML: the service worker would cache it.
+		if (decoded.startsWith("/assets/")) return errorResponse(404, "not_found", "no such file");
+	}
+	return new Response(index, { headers: noCache });
+}
+
+export function createHttpServer(options: HttpServerOptions): Server<SocketData> {
+	const { config, manager, hub, diff } = options;
+
+	async function route(req: Request, server: Server<SocketData>): Promise<Response> {
+		const url = new URL(req.url);
+		const path = url.pathname;
+		const isApi = path === "/health" || path === "/ws" || path.startsWith("/api/");
+
+		if (!isApi) {
+			if (req.method !== "GET" && req.method !== "HEAD") {
+				return errorResponse(405, "method_not_allowed", "only GET is served here", { allow: "GET, HEAD" });
+			}
+			return serveShell(config.webRoot, path);
+		}
+
+		if (path === "/ws") {
+			// The hub does the identity and Origin check itself.
+			if (req.method !== "GET") return errorResponse(405, "method_not_allowed", "use GET", { allow: "GET" });
+			return hub.attach(req, server);
+		}
+
+		const denial = authorizeRequest(req, config);
+		if (denial !== null) return denialResponse(denial);
+
+		if (path === "/health") {
+			return req.method === "GET" ? Response.json({ ok: true }) : methodNotAllowed("GET");
+		}
+		if (path === "/api/bootstrap") {
+			if (req.method !== "GET") return methodNotAllowed("GET");
+			const [repos, sessions] = await Promise.all([listRepos(config.repos), manager.list()]);
+			const body: BootstrapResponse = { repos, sessions };
+			return Response.json(body);
+		}
+		if (path === "/api/sessions") {
+			if (req.method !== "POST") return methodNotAllowed("POST");
+			return startSession(req);
+		}
+		const match = /^\/api\/sessions\/([^/]+)\/(stop|diff)$/.exec(path);
+		if (match !== null) {
+			const sessionId = decodeURIComponent(match[1] ?? "");
+			if (match[2] === "stop") {
+				return req.method === "POST" ? stopSession(sessionId) : methodNotAllowed("POST");
+			}
+			return req.method === "GET" ? sessionDiff(sessionId) : methodNotAllowed("GET");
+		}
+		return errorResponse(404, "not_found", `No such API route: ${path}`);
+	}
+
+	function methodNotAllowed(allow: string): Response {
+		return errorResponse(405, "method_not_allowed", `use ${allow}`, { allow });
+	}
+
+	async function startSession(req: Request): Promise<Response> {
+		const body = await readJsonObject(req);
+		const repoPath = body?.repoPath;
+		const sessionFile = body?.sessionFile;
+		if (typeof repoPath !== "string" || repoPath.length === 0) {
+			return errorResponse(400, "bad_request", "body needs a repoPath string");
+		}
+		if (sessionFile !== undefined && typeof sessionFile !== "string") {
+			return errorResponse(400, "bad_request", "sessionFile must be a string");
+		}
+		const repo = await resolveRepo(config.repos, repoPath);
+		if (!repo.ok) return errorResponse(400, repo.error.code, repo.error.message);
+		const started = await manager.start(
+			sessionFile === undefined ? { repoPath: repo.value.path } : { repoPath: repo.value.path, sessionFile },
+		);
+		if (!started.ok) {
+			const status = CONFLICT_CODES.has(started.error.code) ? 409 : 400;
+			return errorResponse(status, started.error.code, started.error.message);
+		}
+		return Response.json({ session: started.value });
+	}
+
+	async function stopSession(sessionId: string): Promise<Response> {
+		const stopped = await manager.stop(sessionId, "handoff");
+		if (!stopped.ok) return errorResponse(404, stopped.error.code, stopped.error.message);
+		return Response.json({ ok: true });
+	}
+
+	async function sessionDiff(sessionId: string): Promise<Response> {
+		const snapshot = manager.snapshot(sessionId);
+		if (snapshot === null) return errorResponse(404, "session_not_found", `Unknown session: ${sessionId}`);
+		try {
+			return Response.json(await diff(snapshot.session.repo));
+		} catch (err) {
+			return errorResponse(500, "diff_failed", errorText(err));
+		}
+	}
+
+	return Bun.serve<SocketData>({
+		port: config.port,
+		hostname: "127.0.0.1",
+		websocket: hub.websocket,
+		async fetch(req, server) {
+			try {
+				return await route(req, server);
+			} catch (err) {
+				// The text goes back; the stack never does.
+				return errorResponse(500, "internal_error", errorText(err));
+			}
+		},
+	});
+}
