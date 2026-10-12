@@ -1620,3 +1620,47 @@ button.row:active {
 .group .list {
 	padding: 0;
 }
+
+/* Workspace selector: one chip per workspace, with its session count. */
+.workspaces {
+	display: flex;
+	gap: 6px;
+	overflow-x: auto;
+	padding: 10px 12px 2px;
+	scrollbar-width: none;
+}
+
+.workspaces::-webkit-scrollbar {
+	display: none;
+}
+
+.ws-chip {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 44px;
+	padding: 0 14px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--card-bg);
+	color: var(--muted);
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.ws-chip.is-on {
+	border-color: var(--accent);
+	color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.ws-count {
+	color: var(--dim);
+	font-size: 11px;
+}
+
+.ws-chip.is-on .ws-count {
+	color: var(--accent);
+}

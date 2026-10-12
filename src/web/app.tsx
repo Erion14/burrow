@@ -12,6 +12,7 @@ import {
 	withConnection,
 	withDraft,
 	withRemoteOff,
+	withWorkspaceFilter,
 } from "./lib/app-state";
 import { type Connection, createConnection } from "./lib/conn";
 import { ChatScreen, DiffScreen, RemoteOffView, SessionsScreen } from "./screens";
@@ -123,6 +124,7 @@ export function App() {
 				setState((current) => withDraft(current, ""));
 			},
 			setDraft: (text) => setState((current) => withDraft(current, text)),
+			selectWorkspace: (repo) => setState((current) => withWorkspaceFilter(current, repo)),
 			abort: () => connRef.current?.send({ type: "abort" }),
 			answerDialog: (dialogId, answer) => connRef.current?.send({ type: "answer", dialogId, answer }),
 			discardDialog: (dialogId) => connRef.current?.send({ type: "discard_dialog", dialogId }),

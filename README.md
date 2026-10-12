@@ -12,8 +12,10 @@ S25 --HTTPS/WSS over tailnet--> tailscale serve
 
 Burrow keeps one `omp --mode rpc-ui` process per session, holds each session's
 transcript, dialogs and status in memory, and streams it to the phone over a
-WebSocket. The phone is a Preact PWA whose shell is cached by a service worker,
-so it opens even while Burrow is off and offers to turn Remote on.
+WebSocket. The session list is grouped by workspace, and a selector narrows it
+to one workspace at a time. The phone is a Preact PWA whose shell is cached by a
+service worker, so it opens even while Burrow is off and offers to turn Remote
+on.
 
 ## Setup
 

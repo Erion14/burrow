@@ -2,7 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import type { SessionSummary } from "../../shared/types";
 import { relativeTime } from "../lib/format";
-import { groupSessionsByRepo } from "../lib/sessions";
+import { filterSessions, groupSessionsByRepo, workspaceOptions } from "../lib/sessions";
 import { BurrowMark, LaptopIcon, PowerIcon, RefreshIcon } from "./icons";
 import type { ScreenProps } from "./props";
 import { RemoteOffView } from "./remote-off";
@@ -97,9 +97,11 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 
 	const open = state.connection === "open";
 	const loading = state.connection === "connecting" && state.sessions.length === 0;
-	const groups = groupSessionsByRepo(state.sessions);
-	const needs = state.sessions.filter((session) => session.status === "needs_answer").length;
-	const working = state.sessions.filter((session) => session.status === "working").length;
+	const visible = filterSessions(state.sessions, state.workspaceFilter);
+	const options = workspaceOptions(state.sessions);
+	const groups = groupSessionsByRepo(visible);
+	const needs = visible.filter((session) => session.status === "needs_answer").length;
+	const working = visible.filter((session) => session.status === "working").length;
 
 	return (
 		<main class="screen">
@@ -116,7 +118,7 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 					</button>
 				</div>
 				<div class="statusline">
-					<span class="seg-count">{state.sessions.length} {state.sessions.length === 1 ? "session" : "sessions"}</span>
+					<span class="seg-count">{visible.length} {visible.length === 1 ? "session" : "sessions"}</span>
 					{needs > 0 ? <><Sep /><span class="state state-needs_answer"><span class="glyph glyph-needs_answer" aria-hidden="true" />{needs} need answer</span></> : null}
 					{working > 0 ? <><Sep /><span class="state state-working"><span class="glyph glyph-working" aria-hidden="true" />{working} working</span></> : null}
 					<ConnMark connection={state.connection} />
@@ -146,6 +148,33 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 					<button type="button" class="btn btn-new big-btn" disabled={!open} onClick={() => setPicking(true)}>+ new agent</button>
 				</div>
 			)}
+			{options.length > 1 ? (
+				// Selecting a workspace narrows the list below to it; the selection is kept
+				// in app state, so it survives a trip into a chat and back.
+				<nav class="workspaces" aria-label="Workspace">
+					<button
+						type="button"
+						class={`ws-chip ${state.workspaceFilter === null ? "is-on" : ""}`}
+						aria-pressed={state.workspaceFilter === null}
+						onClick={() => actions.selectWorkspace(null)}
+					>
+						all<span class="ws-count">{state.sessions.length}</span>
+					</button>
+					{options.map((option) => (
+						<button
+							key={option.repo}
+							type="button"
+							class={`ws-chip ${state.workspaceFilter === option.repo ? "is-on" : ""}`}
+							aria-pressed={state.workspaceFilter === option.repo}
+							title={option.repo}
+							onClick={() => actions.selectWorkspace(option.repo)}
+						>
+							{option.repoName}
+							<span class="ws-count">{option.count}</span>
+						</button>
+					))}
+				</nav>
+			) : null}
 			{loading ? <p class="placeholder"><span class="spin" aria-hidden="true" /> loading sessions…</p> : null}
 			{groups.length > 0 ? (
 				<div class="groups">
@@ -164,6 +193,13 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 						</section>
 					))}
 				</div>
+			) : null}
+			{!loading && state.sessions.length > 0 && visible.length === 0 ? (
+				<section class="panel empty">
+					<p class="panel-title">workspace</p>
+					<p class="panel-state state-stopped">○ no sessions here right now</p>
+					<button type="button" class="btn btn-quiet" onClick={() => actions.selectWorkspace(null)}>show all workspaces</button>
+				</section>
 			) : null}
 			{!loading && state.sessions.length === 0 ? (
 				<section class="panel empty">

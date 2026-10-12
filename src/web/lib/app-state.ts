@@ -29,6 +29,7 @@ export interface AppActions {
 	openSession(sessionId: string): void;
 	newSession(repoPath: string, sessionFile?: string): Promise<void>;
 	showSessions(): void;
+	selectWorkspace(repo: string | null): void;
 	showScreen(screen: Screen): void;
 	turnRemoteOn(): Promise<void>;
 	turnRemoteOff(): Promise<void>;
@@ -52,6 +53,8 @@ export interface AppState {
 	status: StatusView;
 	sessions: SessionSummary[];
 	repos: RepoOption[];
+	/** null shows every workspace; a repo path narrows the session list to one. */
+	workspaceFilter: string | null;
 	/** The message being typed; kept here so switching screens does not lose it. */
 	draft: string;
 	error: string | null;
@@ -76,6 +79,7 @@ export function initialAppState(): AppState {
 		status: IDLE_STATUS,
 		sessions: [],
 		repos: [],
+		workspaceFilter: null,
 		draft: "",
 		error: null,
 	};
@@ -171,6 +175,10 @@ export function withConnection(state: AppState, connection: ConnectionState): Ap
 
 export function withDraft(state: AppState, draft: string): AppState {
 	return { ...state, draft };
+}
+
+export function withWorkspaceFilter(state: AppState, workspaceFilter: string | null): AppState {
+	return { ...state, workspaceFilter };
 }
 
 export function withRemoteOff(state: AppState, remoteOff: boolean): AppState {

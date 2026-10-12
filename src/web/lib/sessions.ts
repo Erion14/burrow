@@ -25,3 +25,19 @@ export function groupSessionsByRepo(sessions: SessionSummary[]): SessionGroup[] 
 	}
 	return [...groups.values()];
 }
+
+export interface WorkspaceOption {
+	repo: string;
+	repoName: string;
+	count: number;
+}
+
+/** The workspaces that currently have sessions, in list order, each with its count. */
+export function workspaceOptions(sessions: SessionSummary[]): WorkspaceOption[] {
+	return groupSessionsByRepo(sessions).map((group) => ({ repo: group.repo, repoName: group.repoName, count: group.sessions.length }));
+}
+
+/** null means every workspace. */
+export function filterSessions(sessions: SessionSummary[], repo: string | null): SessionSummary[] {
+	return repo === null ? sessions : sessions.filter((session) => session.repo === repo);
+}
