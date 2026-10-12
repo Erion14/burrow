@@ -19,14 +19,14 @@ function session(repo: string, repoName: string, id: string, updatedAt: string):
 describe("groupSessionsByRepo", () => {
 	test("divides sessions by workspace, keeping the newest workspace first", () => {
 		const groups = groupSessionsByRepo([
-			session("/home/erioni/code", "code", "a", "2026-10-12T16:00:00.000Z"),
-			session("/home/erioni/code/burrow", "burrow", "b", "2026-10-12T15:00:00.000Z"),
-			session("/home/erioni/code", "code", "c", "2026-10-12T14:00:00.000Z"),
-			session("/home/erioni/rausoft", "rausoft", "d", "2026-10-12T13:00:00.000Z"),
+			session("/home/user/code", "code", "a", "2026-10-12T16:00:00.000Z"),
+			session("/home/user/code/burrow", "burrow", "b", "2026-10-12T15:00:00.000Z"),
+			session("/home/user/code", "code", "c", "2026-10-12T14:00:00.000Z"),
+			session("/home/user/rausoft", "rausoft", "d", "2026-10-12T13:00:00.000Z"),
 		]);
 		expect(groups.map((group) => group.repoName)).toEqual(["code", "burrow", "rausoft"]);
 		expect(groups[0]!.sessions.map((entry) => entry.id)).toEqual(["a", "c"]);
-		expect(groups[0]!.repo).toBe("/home/erioni/code");
+		expect(groups[0]!.repo).toBe("/home/user/code");
 	});
 
 	test("keeps a workspace together even when its sessions are not adjacent", () => {
@@ -47,13 +47,13 @@ describe("groupSessionsByRepo", () => {
 describe("workspaceOptions", () => {
 	test("lists each workspace once, in list order, with its count", () => {
 		const options = workspaceOptions([
-			session("/home/erioni/code", "code", "a", "2026-10-12T16:00:00.000Z"),
-			session("/home/erioni/code/burrow", "burrow", "b", "2026-10-12T15:00:00.000Z"),
-			session("/home/erioni/code", "code", "c", "2026-10-12T14:00:00.000Z"),
+			session("/home/user/code", "code", "a", "2026-10-12T16:00:00.000Z"),
+			session("/home/user/code/burrow", "burrow", "b", "2026-10-12T15:00:00.000Z"),
+			session("/home/user/code", "code", "c", "2026-10-12T14:00:00.000Z"),
 		]);
 		expect(options).toEqual([
-			{ repo: "/home/erioni/code", repoName: "code", count: 2 },
-			{ repo: "/home/erioni/code/burrow", repoName: "burrow", count: 1 },
+			{ repo: "/home/user/code", repoName: "code", count: 2 },
+			{ repo: "/home/user/code/burrow", repoName: "burrow", count: 1 },
 		]);
 	});
 });

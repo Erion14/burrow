@@ -34,7 +34,7 @@ async function session(folder: string, name: string, lines: string[], mtimeSec?:
 
 test("filters by header cwd, never by folder name", async () => {
 	const good = await session("--totally-wrong-folder--", "a", [header("a", repo), user("hi")]);
-	await session("--home-erioni-repo--", "b", [header("b", other), user("hi")]);
+	await session("--home-user-repo--", "b", [header("b", other), user("hi")]);
 	await session("--x--", "c", [user("no header here")]);
 	const list = await listRecentSessions(sessions, [repo]);
 	expect(list.map((s) => s.sessionFile)).toEqual([good]);

@@ -1,6 +1,31 @@
 {
   "name": "burrow",
+  "version": "0.1.0",
   "private": true,
+  "description": "Phone remote for omp coding agents over Tailscale: prompt them, answer them, review their diffs.",
+  "license": "MIT",
+  "author": "Erion Ademi <117570706+Erion14@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Erion14/burrow.git"
+  },
+  "homepage": "https://github.com/Erion14/burrow#readme",
+  "bugs": {
+    "url": "https://github.com/Erion14/burrow/issues"
+  },
+  "keywords": [
+    "omp",
+    "coding-agent",
+    "pwa",
+    "preact",
+    "bun",
+    "tailscale",
+    "remote",
+    "phone"
+  ],
+  "engines": {
+    "bun": ">=1.4.0"
+  },
   "type": "module",
   "scripts": {
     "start": "bun run src/server/main.ts",

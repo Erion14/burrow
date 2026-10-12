@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Design and phase plan
+    url: https://github.com/Erion14/burrow/blob/main/PLAN.md
+    about: What Burrow is meant to be, and what is deliberately left out.
+  - name: Security report
+    url: https://github.com/Erion14/burrow/blob/main/SECURITY.md
+    about: Report a vulnerability privately, not in the issue tracker.

@@ -22,7 +22,11 @@ run mkdir -p "$SCRIPTS" "$UNITS"
 for f in remote.sh lid.sh sleep-guard.sh; do
     run install -m 0755 "$HERE/$f" "$SCRIPTS/$f"
 done
-run install -m 0644 "$HERE/hypridle.conf" "$HOME/.config/hypr/hypridle.conf"
+# hypridle.conf keeps $HOME as a placeholder, since the repo must not carry a
+# path from one machine; the installed copy gets the real home directory.
+printf '+ expand $HOME in hypridle.conf -> %s\n' "$HOME/.config/hypr/hypridle.conf"
+(( PRINT )) || sed "s|\$HOME|$HOME|g" "$HERE/hypridle.conf" > "$HOME/.config/hypr/hypridle.conf"
+(( PRINT )) || chmod 0644 "$HOME/.config/hypr/hypridle.conf"
 for u in burrow.service burrow-wake.service; do
     run install -m 0644 "$HERE/systemd/$u" "$UNITS/$u"
 done

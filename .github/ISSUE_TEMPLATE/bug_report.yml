@@ -1,0 +1,51 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems do not belong here: see [SECURITY.md](../SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact wording of any error, and what the phone or the log showed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      placeholder: |
+        1. open https://laptop.tailnet.ts.net/
+        2. start an agent in a repo
+        3. tap Stop mid-turn
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `bun --version`, `omp --version`, `tailscale version`, and the phone browser.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Phone app
+        - Server
+        - Alerts
+        - Host setup (units, power, serve config)
+        - Diff screen
+    validations:
+      required: true

@@ -1,6 +1,12 @@
 # Burrow host setup
 
-Host-side pieces that keep the laptop reachable from the phone. No Burrow application code.
+Host-side pieces that keep the laptop reachable from the phone. No Burrow
+application code. Written for a Fedora laptop running Hyprland, `systemd --user`
+with linger enabled, and `tailscale serve` as the only entry point; on another
+setup take the parts that apply.
+
+`hypridle.conf` carries `$HOME` as a placeholder rather than a path from one
+machine, and `install.sh` expands it while installing.
 
 ## What goes where
 
