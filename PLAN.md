@@ -14,7 +14,7 @@ Samsung S25. It is reachable only over Tailscale and runs while Remote mode is o
 | Lid | On the charger, lid close locks the screen and does not suspend, so the always-on endpoint stays reachable. On battery it suspends as before. |
 | Agents | Burrow spawns omp itself (`omp --mode rpc-ui`) with the laptop's normal config and approval settings. Sessions are ordinary omp session files, so you can continue at the laptop with `omp -r <id>`. |
 | Repos | Allowlist only, in `~/.config/burrow/repos` (one absolute path per line). New agents can start only in these. |
-| Alerts | Only "agent finished" and "agent needs your answer". |
+| Alerts | Only "agent finished" and "agent needs your answer", sent through ntfy to the topic in `~/.config/burrow/ntfy` (currently `https://ntfy.sh/omp-erioni-97143`, the same topic as `~/.omp/agent/extensions/ntfy-notify.ts`). |
 | Laptop sessions | omp started in a Tern tab: chat view if `/collab` is on, else Tern terminal view (phase 3). |
 | Tern | Later (phase 3): snapshot view + command box + key bar (Esc, Tab, ^C, arrows). |
 | Desktop | wayvnc on a headless virtual output, started on demand, opened with AVNC (phase 4). |
@@ -56,7 +56,7 @@ burrow-wake (always on, tiny) --> remote.sh on|off
 2. PWA: Sessions screen (status dot: working / needs answer / idle, "+ New agent" with repo picker, resume), Chat screen (streaming text, collapsed tool cards, ask buttons, message box, stop button).
 3. Remote integration: `remote.sh on` starts `burrow.service` and `tailscale serve`, and `off` stops both. Add a Remote OFF button in the app.
 4. `burrow-wake`: always-on user service, tailnet-only, with one action (turn Remote ON). The lid on charger locks instead of suspending (`lid.sh`).
-5. Alerts: Web Push (VAPID) on `agent_end` and on `extension_ui_request`.
+5. Alerts: the server POSTs to the ntfy topic on `agent_end` and on `extension_ui_request`, for every phone-started session (no `[ntfy]` tag needed). It sets the `Title` header (repo name), a short body ("Finished (3m 12s)" / "Needs your answer"), and a `Click` header with the Burrow session URL so tapping the alert opens the app on that session. Bodies never include transcript text: anyone who knows a public ntfy.sh topic can read it. The existing `ntfy-notify.ts` extension also loads in Burrow-spawned omp, so a `[ntfy]`-tagged phone prompt would push twice. Burrow sets `BURROW=1` in the omp environment, and the extension returns early when it is set.
 
 Acceptance:
 - From the S25 on mobile data: open the app, start an agent in an allowlisted repo, answer an `ask` with a button, interrupt a turn, close the app, reopen it, and the transcript is intact.
@@ -76,6 +76,6 @@ Terminals section using `tern ls --json`, `tern capture --html`, `tern send`/`te
 
 ## Risks to verify early
 - `rpc-ui` frame volume over mobile data: the server should coalesce streaming deltas before sending.
-- Web Push on an installed PWA under a `*.ts.net` origin on Samsung/Chrome: verify on the S25 in phase 1, before building on it.
+- ntfy `Click` deep links into the installed PWA on the S25 (opens the app vs a Chrome tab): verify in phase 1.
 - Lid-closed + charger heat with the laptop in a bag.
 - Hyprland headless output + wayvnc + hyprlock interaction (phase 4).
