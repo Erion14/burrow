@@ -244,6 +244,24 @@ describe("send", () => {
 		await until(() => proc.exited);
 		expect(await proc.send({ type: "get_state" })).toMatchObject({ ok: false });
 	});
+
+	test("a late error response for an id that already resolved surfaces as an error notice", async () => {
+		const proc = await start();
+		const events = collect(proc);
+		expect(await proc.send({ type: "prompt", message: "hi", streamingBehavior: "followUp" })).toMatchObject({ ok: true });
+		await proc.send({
+			type: "__emit",
+			frames: [
+				{ id: "req_3", type: "response", command: "prompt", success: false, error: "model refused" },
+				{ id: "never-sent", type: "response", command: "prompt", success: false, error: "stray" },
+			],
+		});
+		// The __emit ack follows the forged frames on the same stream, so they are already dispatched.
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({ type: "notice", level: "error" });
+		expect(String(events[0]!.message)).toContain("model refused");
+		expect(String(events[0]!.message)).toContain("prompt");
+	});
 });
 
 describe("events", () => {
@@ -387,6 +405,20 @@ describe("exit and close", () => {
 		expect(events.map((e) => e.type)).toEqual(["last_words"]);
 		const again = await proc.close();
 		expect(again.code).toBe(3);
+	});
+
+	test("stderr keeps only the last 16 KiB", async () => {
+		const proc = await start();
+		const exits: Array<{ stderr: string }> = [];
+		proc.onExit((info) => exits.push(info));
+		await proc.send({ type: "__stderr", text: "a".repeat(20_000) });
+		await proc.send({ type: "__stderr", text: `${"b".repeat(10_000)}END` });
+		await proc.send({ type: "__exit", code: 1 });
+		await until(() => exits.length > 0);
+		const { stderr } = exits[0]!;
+		expect(stderr).toHaveLength(16 * 1024);
+		expect(stderr.endsWith(`${"b".repeat(10_000)}END`)).toBe(true);
+		expect(stderr.startsWith("a")).toBe(true);
 	});
 
 	test("kill() sends SIGKILL immediately", async () => {

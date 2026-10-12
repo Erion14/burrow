@@ -32,6 +32,10 @@ await run([
 	"--minify", "--target", "browser", "--splitting",
 ]);
 await run(["bun", "build", `${SRC}/sw.ts`, "--outdir", OUT, "--minify", "--target", "browser"]);
+// Browsers only install a new worker when sw.js changes byte for byte. Without
+// this id a deploy that leaves sw.ts alone would never refresh the offline shell.
+const swPath = join(OUT, "sw.js");
+await Bun.write(swPath, `${await Bun.file(swPath).text()}\n// build ${Date.now().toString(36)}-${crypto.randomUUID()}\n`);
 
 // The service worker discovers what to cache by reading index.html, so every
 // bundle file (entry, css, split chunks) must be referenced from it.

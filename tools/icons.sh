@@ -5,12 +5,12 @@ set -euo pipefail
 out="$(cd "$(dirname "$0")/.." && pwd)/src/web/icons"
 mkdir -p "$out"
 
+# omp dark-rainforest: orchidPurple (accent) arch on canopyBlack, framed in barkBorder
+# like a TUI box. The arch path matches BurrowMark in src/web/screens/icons.tsx.
 svg='<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#1e1e2e"/>
-  <path d="M96 400 V248 C96 160 168 96 256 96 C344 96 416 160 416 248 V400 Z" fill="#cba6f7"/>
-  <path d="M168 400 V264 C168 208 208 168 256 168 C304 168 344 208 344 264 V400 Z" fill="#11111b"/>
-  <path d="M212 400 V280 C212 252 230 232 256 232 C282 232 300 252 300 280 V400 Z" fill="#89b4fa"/>
-  <rect x="64" y="400" width="384" height="24" rx="12" fill="#45475a"/>
+  <rect width="512" height="512" fill="#0A0D0B"/>
+  <rect x="40" y="40" width="432" height="432" rx="20" fill="none" stroke="#2A3A2D" stroke-width="8"/>
+  <path fill-rule="evenodd" fill="#B07AD9" d="M112 392 V252 C112 166 176 112 256 112 C336 112 400 166 400 252 V392 Z M188 392 V274 C188 236 218 208 256 208 C294 208 324 236 324 274 V392 Z"/>
 </svg>'
 
 for size in 192 512; do

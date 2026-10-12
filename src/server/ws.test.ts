@@ -4,7 +4,7 @@ import { FakeManager, makeSummary } from "../../test/fake-manager";
 import type { ServerMessage } from "../shared/protocol";
 import type { BurrowConfig } from "./config";
 import { createHttpServer } from "./http";
-import { createHub, type Hub, type SocketData } from "./ws";
+import { createHub, type Hub, SEND_BUFFER_LIMIT_BYTES, type SocketData } from "./ws";
 
 const OWNER = "owner@example.com";
 const ORIGIN = "https://burrow.tailnet.ts.net";
@@ -144,13 +144,20 @@ describe("attach", () => {
 
 	test("unknown session sends an error and keeps the socket open as a list socket", async () => {
 		const client = await connect("?session=nope");
-		const [first] = await client.waitFor(1);
+		const [first, second] = await client.waitFor(2);
 		expect(first).toMatchObject({ type: "error", code: "session_not_found" });
+		expect(second?.type).toBe("sessions");
 		expect(client.closed).toBe(false);
 		expect(hub.attachedSessionIds().size).toBe(0);
 		manager.emit(null, { type: "sessions", sessions: [], repos: [] });
-		const messages = await client.waitFor(2);
-		expect(messages[1]?.type).toBe("sessions");
+		const messages = await client.waitFor(3);
+		expect(messages[2]).toEqual({ type: "sessions", sessions: [], repos: [] });
+	});
+
+	test("a list socket receives the session list on attach", async () => {
+		const client = await connect();
+		const [first] = await client.waitFor(1);
+		expect(first).toEqual({ type: "sessions", sessions: manager.sessions, repos: [] });
 	});
 
 	test("closing a socket releases the attached session", async () => {
@@ -169,16 +176,17 @@ describe("fan out", () => {
 		const a = await connect("?session=s1");
 		const b = await connect("?session=s2");
 		const list = await connect();
+		await list.waitFor(1);
 		await a.waitFor(1);
 		await b.waitFor(1);
 		manager.emit("s1", { type: "status", status: { status: "working", isSettled: false, hasPendingAsyncWork: false } });
 		manager.emit(null, { type: "sessions", sessions: [makeSummary("s1")], repos: [] });
 		await a.waitFor(2);
-		await list.waitFor(1);
+		await list.waitFor(2);
 		await Bun.sleep(250);
 		expect(a.messages.map((m) => m.type)).toEqual(["snapshot", "status"]);
 		expect(b.messages.map((m) => m.type)).toEqual(["snapshot"]);
-		expect(list.messages.map((m) => m.type)).toEqual(["sessions"]);
+		expect(list.messages.map((m) => m.type)).toEqual(["sessions", "sessions"]);
 	});
 
 	test("three deltas in one flush window arrive as one delta with concatenated text", async () => {
@@ -258,6 +266,32 @@ describe("client messages", () => {
 		expect(client.messages[2]).toMatchObject({ type: "error", code: "bad_message" });
 		expect(manager.deliverCalls).toHaveLength(0);
 	});
+
+	test("a message on a socket without a session gets an error ack and is never applied", async () => {
+		const client = await connect();
+		await client.waitFor(1);
+		client.send({ type: "prompt", clientId: "c1", text: "stale" });
+		client.send({ type: "prompt", clientId: "c1", text: "stale" });
+		await client.waitFor(3);
+		const acks = client.messages.slice(1);
+		for (const ack of acks) {
+			expect(ack).toMatchObject({ type: "ack", clientId: "c1", status: "error" });
+			if (ack.type === "ack") expect(ack.error).toBeString();
+		}
+		expect(manager.deliverCalls).toHaveLength(0);
+	});
+
+	test("a malformed message that carries a clientId gets an error ack and the id stays usable", async () => {
+		const client = await connect("?session=s1");
+		await client.waitFor(1);
+		client.send({ type: "bogus", clientId: "c9" });
+		await client.waitFor(2);
+		expect(client.messages[1]).toMatchObject({ type: "ack", clientId: "c9", status: "error" });
+		client.send({ type: "prompt", clientId: "c9", text: "hi" });
+		await client.waitFor(3);
+		expect(client.messages[2]).toEqual({ type: "ack", clientId: "c9", status: "ok" });
+		expect(manager.deliversFor("c9")).toHaveLength(1);
+	});
 });
 
 describe("broadcastList and close", () => {
@@ -281,6 +315,80 @@ describe("broadcastList and close", () => {
 		const deadline = Date.now() + 2000;
 		while (!client.closed && Date.now() < deadline) await Bun.sleep(10);
 		expect(client.closed).toBe(true);
+		expect(hub.attachedCount()).toBe(0);
+	});
+});
+
+describe("slow consumer", () => {
+	interface FakeSocket {
+		data: SocketData;
+		sent: string[];
+		closes: { code: number; reason: string }[];
+		buffered: number;
+		sendResult: (payload: string) => number;
+		send(payload: string): number;
+		getBufferedAmount(): number;
+		close(code: number, reason: string): void;
+	}
+
+	function fakeSocket(sessionId: string | null): FakeSocket {
+		return {
+			data: { sessionId, applied: new Set(), queue: [], timer: undefined },
+			sent: [],
+			closes: [],
+			buffered: 0,
+			sendResult: (payload) => payload.length,
+			send(payload) {
+				this.sent.push(payload);
+				return this.sendResult(payload);
+			},
+			getBufferedAmount() {
+				return this.buffered;
+			},
+			close(code, reason) {
+				this.closes.push({ code, reason });
+			},
+		};
+	}
+
+	test("a dropped send closes the socket with 1013 and stops sending to it", () => {
+		const ws = fakeSocket("s1");
+		hub.websocket.open?.(ws as never);
+		const snapshot = manager.snapshot("s1");
+		if (snapshot === null) throw new Error("no snapshot");
+		expect(ws.sent).toHaveLength(1);
+		expect(hub.attachedCount()).toBe(1);
+		ws.sendResult = () => 0;
+		manager.emit("s1", { type: "snapshot", snapshot });
+		expect(ws.closes).toHaveLength(1);
+		expect(ws.closes[0]?.code).toBe(1013);
+		expect(ws.closes[0]?.reason).not.toBe("");
+		expect(hub.attachedCount()).toBe(0);
+		manager.emit("s1", { type: "snapshot", snapshot });
+		expect(ws.sent).toHaveLength(2);
+		expect(ws.closes).toHaveLength(1);
+	});
+
+	test("a buffer past the limit closes the socket with 1013", () => {
+		const ws = fakeSocket("s1");
+		hub.websocket.open?.(ws as never);
+		const snapshot = manager.snapshot("s1");
+		if (snapshot === null) throw new Error("no snapshot");
+		ws.sendResult = () => -1;
+		ws.buffered = SEND_BUFFER_LIMIT_BYTES - 1;
+		manager.emit("s1", { type: "snapshot", snapshot });
+		expect(ws.closes).toHaveLength(0);
+		ws.buffered = SEND_BUFFER_LIMIT_BYTES + 1;
+		manager.emit("s1", { type: "snapshot", snapshot });
+		expect(ws.closes.map((c) => c.code)).toEqual([1013]);
+		expect(hub.attachedCount()).toBe(0);
+	});
+
+	test("a socket whose snapshot is dropped on attach is closed with 1013", () => {
+		const ws = fakeSocket("s1");
+		ws.sendResult = () => 0;
+		hub.websocket.open?.(ws as never);
+		expect(ws.closes.map((c) => c.code)).toEqual([1013]);
 		expect(hub.attachedCount()).toBe(0);
 	});
 });

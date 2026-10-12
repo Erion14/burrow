@@ -11,7 +11,7 @@ periods. Burrow is reachable only over Tailscale and runs while Remote mode is o
 |---|---|
 | Purpose | Remote work from the phone: prompt agents, answer them, review their changes. Not a terminal replacement. |
 | Form | PWA installed from Chrome ("Install app"). No APK. A service worker caches the app shell, so the app opens even while Burrow is off. |
-| Stack | Bun + TypeScript backend (`Bun.serve` for HTTP and WebSocket, no framework), Preact frontend bundled with `bun build` (no Vite), `bun test` for tests, Catppuccin Mocha palette (same as Waybar). |
+| Stack | Bun + TypeScript backend (`Bun.serve` for HTTP and WebSocket, no framework), Preact frontend bundled with `bun build` (no Vite), `bun test` for tests, omp's own `dark-rainforest` theme (the palette bundled with omp, same one the TUI uses) so the phone reads like omp and Tern. |
 | Network | Tailscale only, through one permanent `tailscale serve` config: `/` to `burrow` on 127.0.0.1:7470, `/wake` (`--set-path /wake`) to `burrow-wake` on 127.0.0.1:7471. Never `funnel`. |
 | Auth | Tailscale identity, checked by Burrow. Binding to 127.0.0.1 is not auth on its own: every request needs a `Tailscale-User-Login` equal to the laptop's own Tailscale login (read from `tailscale status --json` at startup), and every WebSocket upgrade needs the Burrow `Origin`. |
 | Host | The laptop stays home on the charger for long periods. On the charger it never suspends, lid open or closed, Remote on or off. On battery it behaves as before. |
@@ -19,8 +19,8 @@ periods. Burrow is reachable only over Tailscale and runs while Remote mode is o
 | Agents | Burrow spawns omp itself (`omp --mode rpc-ui`), one process per session, with the laptop's config and approval settings. Today that is `tools.approvalMode = yolo`, so a phone started agent runs commands without asking, exactly as at the laptop; approval dialogs appear only for tools that force one. Sessions are ordinary omp session files. RPC mode pins neutral defaults for task isolation, memory, advisor, and bash/eval auto background unless the config sets them explicitly; set them in config wherever the phone must behave like the laptop. |
 | Handoff | Laptop to phone: quit omp at the laptop, then resume the session from the phone. Phone to laptop: "Hand off to laptop" stops Burrow's process, then `omp -r <id>`. A session file is never written by two processes: omp keeps its session file open, so Burrow scans `/proc/*/fd` and refuses to resume a session that another process has open. |
 | Repos | Allowlist only, in `~/.config/burrow/repos` (one absolute path per line). New agents start only in these. Paths are compared after resolving symlinks. Recent sessions are filtered by the `cwd` in the session header, never by the session folder name, which is ambiguous (`-code-logistics-backend`). The allowlist scopes where agents start; it is not a sandbox. |
-| Review | Phase 1: transcript with tool cards, subagent progress, and a read only diff of the session's repo. Phase 2: commit and push. |
-| Alerts | Only "agent finished" and "agent needs your answer", sent through ntfy to the topic in `~/.config/burrow/ntfy` (currently `https://ntfy.sh/omp-erioni-97143`, the same topic as `~/.omp/agent/extensions/ntfy-notify.ts`). |
+| Review | Phase 1: transcript with tool cards, subagent progress, and a read only diff of the session's repo. A workspace directory that holds several git repos (for example `~/code`) diffs each repo found one level down and prefixes the paths. Phase 2: commit and push. |
+| Alerts | Only "agent finished" and "agent needs your answer", sent through ntfy to the topic in `~/.config/burrow/ntfy` (the same topic as `~/.omp/agent/extensions/ntfy-notify.ts`). |
 | Lost phone | Kill switch: remove the S25 from the tailnet in the Tailscale admin console. A passkey prompt when the app opens is the cheapest second factor, if one is wanted later. |
 | Laptop sessions | omp started in a Tern tab: chat view if `/collab` is on, else Tern terminal view (phase 3). |
 | Tern | Later (phase 3): snapshot view + command box + key bar (Esc, Tab, ^C, arrows). |
@@ -41,9 +41,11 @@ S25 (PWA) --HTTPS/WSS over tailnet--> tailscale serve (permanent config)
 
 - `burrow` and `burrow-wake` bind 127.0.0.1 only; `tailscale serve` is the single entry point. Its config is set once and never toggled, so `/wake` answers while Burrow is off. `/` then fails, and the cached app shell shows "Remote is OFF" with a Turn ON button that calls `/wake` (same origin, no CORS).
 - Every request needs the owner's `Tailscale-User-Login`, and every WebSocket upgrade also needs the Burrow `Origin`. A page open in the laptop's browser can open a WebSocket to 127.0.0.1, and it must never reach omp.
+- Every state-changing request (POST, PUT, PATCH, DELETE) to `burrow` or `burrow-wake` also needs `Origin` equal to the Burrow origin; a missing `Origin` passes only with `Sec-Fetch-Site: same-origin` or `none`. `tailscale serve` adds the owner's login to every request from the phone, so without this any page open in the phone's browser could turn Remote OFF or start an agent with a plain form POST. GET needs no `Origin`.
+- Neither server has an idle timeout: a resume or a large diff can take longer than Bun's default 10 s, and a dropped answer would leave the phone guessing while the work goes on.
 - The server owns the omp processes and keeps each session's state in memory: the transcript (from `message_end`, plus the message in progress built from deltas), open dialogs, and status. A phone that connects or reconnects gets a snapshot, then live events. Dropped connections are the normal case on mobile data.
-- Every message from the phone carries a client id, and the server ignores ids it has already seen, so a message sent during a dropout reaches the agent exactly once.
-- One WebSocket per open phone screen. Streamed text is batched (about 100 ms) before sending.
+- Every message from the phone carries a client id, and the server ignores ids it has already seen, so a message sent during a dropout reaches the agent exactly once. Every message with a client id gets an ack, including one that cannot be applied (malformed, or sent on a socket without a session): that ack has status `error` and the id is not recorded, so the phone stops resending it.
+- One WebSocket per open phone screen. Streamed text is batched (about 100 ms) before sending. A list socket gets the session list as soon as it attaches. A socket whose send is dropped or whose outgoing buffer passes 4 MB is closed with code 1013, so a phone that stopped reading reconnects and takes a fresh snapshot instead of a transcript with holes.
 - A session is stopped when no phone is attached, `get_state` reports `isSettled` and not `hasPendingAsyncWork`, no dialog is open, and all of that has held for the idle timeout. It stays resumable from the session file.
 
 ### omp RPC mapping (see `omp://rpc.md`)
@@ -72,7 +74,7 @@ Test first, one behavior at a time, with `bun test` and tests beside the code.
 - PWA logic that decides behavior (reconnect, resend with the same client id, building dialog answers) lives in plain modules tested with `bun test`. Screens are checked on the phone.
 - Negative cases, each asserting what must not happen:
   - missing or foreign `Tailscale-User-Login`: 403, no omp process started
-  - foreign `Origin` on a WebSocket upgrade: refused
+  - foreign `Origin` on a WebSocket upgrade, or a foreign or missing `Origin` on a POST: refused
   - repo outside the allowlist, reached through a symlink, or containing `..`: refused, no process started
   - resume of a session another process has open: refused, no second writer
   - the same client id sent twice: one `prompt`
@@ -90,14 +92,14 @@ Test first, one behavior at a time, with `bun test` and tests beside the code.
 2. PWA:
    - Sessions screen: status dot (working / needs answer / idle), "+ New agent" with repo picker, resume, "open at laptop" marker.
    - Chat screen: streaming text, collapsed tool cards, subagent progress, dialogs (buttons for `ask` and `select`, yes and no for `confirm`, a text box for `input` and `editor`), message box, stop button, "Hand off to laptop".
-   - Diff screen: read only `git diff HEAD` plus untracked files for the session's repo, per file, unified, wrapped for the phone.
+   - Diff screen: read only `git diff HEAD` plus untracked files for the session's repo, per file, unified, wrapped for the phone. Bounded so a large untracked tree cannot stall it: the whole diff stops after 20 s, each git call's output is capped, at most 200 untracked files are rendered, and untracked files over 1 MB are skipped. Whatever is left out sets `truncated` and adds a `notice` line.
    - Service worker with the cached shell and the "Remote is OFF, turn ON" screen.
 3. Remote integration: the permanent `tailscale serve` config (`/` and `/wake`). `remote.sh on` takes the sleep inhibitor (as today) and starts `burrow.service`; `off` stops both. Remote OFF button in the app.
 4. Stay awake on the charger:
    - One "suspend unless on AC" check, used by `lid.sh` `sleep_now` and by the hypridle 900 s listener. Today both suspend whenever Remote is off, so `burrow-wake` would vanish 15 minutes after you leave. Locking and turning the screen off stay as they are.
    - After a reboot nobody is logged in: the GDM login screen runs, `lid.sh` and hypridle do not. Cover that with a logind config file setting `HandleLidSwitchExternalPower=lock` (no lid override exists today, so logind suspends on lid close even on the charger), and turn off GDM's idle suspend on AC (`sleep-inactive-ac-type='nothing'` in `/etc/dconf/db/gdm.d/`, then `dconf update`).
    - `burrow-wake`: always on user service with one action, `remote.sh on`. Linger is already on, so it starts at boot without a login.
-5. Alerts: the server POSTs to the ntfy topic for every session Burrow runs (no `[ntfy]` tag needed). "Finished (3m 12s)" is sent on `session_settled`. "Needs your answer" is sent when a dialog opens (`select`, `confirm`, `input`, `editor`, `ask`), never for `notify`, `setStatus`, or `setWidget`. It sets the `Title` header (repo name) and a `Click` header with the Burrow session URL, so tapping the alert opens the app on that session. Bodies never include transcript text: anyone who knows a public ntfy.sh topic can read it. The existing `ntfy-notify.ts` extension also loads in omp processes spawned by Burrow, so a phone prompt tagged `[ntfy]` would push twice. Burrow sets `BURROW=1` in the omp environment, and the extension returns early when it is set.
+5. Alerts: the server POSTs to the ntfy topic for every session Burrow runs (no `[ntfy]` tag needed). "Finished (3m 12s)" is sent on `session_settled`. "Needs your answer" is sent when a dialog opens (`select`, `confirm`, `input`, `editor`, `ask`), never for `notify`, `setStatus`, or `setWidget`. It sets the `Title` header (repo name, reduced to printable ASCII because a header cannot carry a Cyrillic name; omitted when nothing is left) and a `Click` header with the Burrow session URL, so tapping the alert opens the app on that session. A failed push is logged and never disturbs the session. Bodies never include transcript text: anyone who knows a public ntfy.sh topic can read it. The existing `ntfy-notify.ts` extension also loads in omp processes spawned by Burrow, so a phone prompt tagged `[ntfy]` would push twice. Burrow sets `BURROW=1` in the omp environment, and the extension returns early when it is set.
 
 Acceptance:
 - From the S25 on mobile data: open the app, start an agent in an allowlisted repo, answer an `ask` with a button and another with free text, interrupt a turn, close the app, reopen it, and the transcript is intact.

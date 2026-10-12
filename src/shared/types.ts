@@ -112,4 +112,9 @@ export interface DiffResponse {
 	repo: string;
 	files: DiffFile[];
 	truncated: boolean;
+	/**
+	 * One line per remark: what was shown instead when `repo` is not itself a git
+	 * repository, and what the size, count and time limits left out.
+	 */
+	notice?: string;
 }

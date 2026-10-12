@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { DialogAnswer } from "../../shared/protocol";
 import type { DialogQuestion, DialogView } from "../../shared/types";
 import { type QuestionSelection, askAnswer, confirmAnswer, selectAnswer, textAnswer } from "../lib/dialog-answers";
@@ -36,7 +36,7 @@ function QuestionBlock({
 
 	return (
 		<div class={`question ${done ? "question-done" : ""}`}>
-			{question.header ? <small class="muted">{question.header}</small> : null}
+			{question.header ? <p class="label question-header">{question.header}</p> : null}
 			<p class="dialog-message">{question.question}</p>
 			<div class="choices">
 				{question.options.map((option, index) => {
@@ -45,26 +45,32 @@ function QuestionBlock({
 						<button
 							key={option.label}
 							type="button"
-							class={`btn btn-choice ${on ? "btn-primary" : ""}`}
+							class={`btn btn-choice ${on ? "is-on" : ""}`}
 							aria-pressed={on}
 							disabled={done}
 							onClick={() => toggle(option.label)}
 						>
-							<span>{multi ? (on ? "[x] " : "[ ] ") : ""}{option.label}{question.recommended === index ? " (recommended)" : ""}</span>
-							{option.description ? <small>{option.description}</small> : null}
+							<span class="choice-key" aria-hidden="true">{multi ? (on ? "[x]" : "[ ]") : on ? "❯" : `${index + 1}`}</span>
+							<span class="choice-body">
+								<span class="choice-label">
+									{option.label}
+									{question.recommended === index ? <em class="rec">recommended</em> : null}
+								</span>
+								{option.description ? <small>{option.description}</small> : null}
+							</span>
 						</button>
 					);
 				})}
 			</div>
 			<input
 				type="text"
-				placeholder="Or type an answer"
+				placeholder="or type your own answer"
 				value={selection.custom ?? ""}
 				disabled={done}
 				onInput={(event) => setCustom(event.currentTarget.value)}
 			/>
-			{check.ok ? null : <small class="muted">{done ? "" : check.error}</small>}
-			<button type="button" class="btn" disabled={done || !check.ok} onClick={onCommit}>
+			{check.ok ? null : <small class="dialog-hint">{done ? "" : check.error}</small>}
+			<button type="button" class={`btn ${done ? "" : "btn-commit"}`} disabled={done || !check.ok} onClick={onCommit}>
 				{done ? "Done" : multi ? "Confirm" : "Select"}
 			</button>
 		</div>
@@ -123,31 +129,53 @@ function TextPanel({ dialog, onAnswer }: { dialog: Extract<DialogView, { kind: "
 }
 
 export function DialogPanel({ dialog, onAnswer, onDiscard }: Props) {
+	const [answered, setAnswered] = useState(false);
+	const answer = (value: DialogAnswer) => {
+		if (answered) return;
+		setAnswered(true);
+		onAnswer(value);
+	};
+	const discard = () => {
+		if (answered) return;
+		setAnswered(true);
+		onDiscard();
+	};
+	useEffect(() => setAnswered(false), [dialog.id]);
 	const title = dialog.kind === "ask" ? "" : dialog.title;
 	const message = dialog.kind === "ask" ? "" : dialog.message;
 	return (
 		<section class="dialog" role="dialog" aria-label="Agent question">
-			{title ? <h2>{title}</h2> : null}
+			<div class="dialog-head"><span class="glyph glyph-needs_answer" aria-hidden="true" />agent needs your answer</div>
+			{title ? <h2 class="dialog-title">{title}</h2> : null}
 			{message ? <p class="dialog-message">{message}</p> : null}
 			{dialog.kind === "confirm" ? (
-				<div class="choices">
-					<button type="button" class="btn btn-primary" onClick={() => onAnswer(confirmAnswer(true))}>Yes</button>
-					<button type="button" class="btn" onClick={() => onAnswer(confirmAnswer(false))}>No</button>
+				<div class="choices choices-row">
+					<button type="button" class="btn btn-choice btn-yes" onClick={() => answer(confirmAnswer(true))}>
+						<span class="choice-key" aria-hidden="true">y</span>
+						<span class="choice-label">Yes</span>
+					</button>
+					<button type="button" class="btn btn-choice" onClick={() => answer(confirmAnswer(false))}>
+						<span class="choice-key" aria-hidden="true">n</span>
+						<span class="choice-label">No</span>
+					</button>
 				</div>
 			) : null}
 			{dialog.kind === "select" ? (
 				<div class="choices">
 					{dialog.options.map((option, index) => (
-						<button key={option} type="button" class="btn btn-choice" onClick={() => onAnswer(selectAnswer(option))}>
-							<span>{option}</span>
-							{dialog.optionDetails[index] ? <small>{dialog.optionDetails[index]}</small> : null}
+						<button key={option} type="button" class="btn btn-choice" onClick={() => answer(selectAnswer(option))}>
+							<span class="choice-key" aria-hidden="true">{index + 1}</span>
+							<span class="choice-body">
+								<span class="choice-label">{option}</span>
+								{dialog.optionDetails[index] ? <small>{dialog.optionDetails[index]}</small> : null}
+							</span>
 						</button>
 					))}
 				</div>
 			) : null}
-			{dialog.kind === "input" || dialog.kind === "editor" ? <TextPanel dialog={dialog} onAnswer={onAnswer} /> : null}
-			{dialog.kind === "ask" ? <AskPanel dialog={dialog} onAnswer={onAnswer} /> : null}
-			<button type="button" class="btn btn-quiet" onClick={onDiscard}>Cancel</button>
+			{dialog.kind === "input" || dialog.kind === "editor" ? <TextPanel dialog={dialog} onAnswer={answer} /> : null}
+			{dialog.kind === "ask" ? <AskPanel dialog={dialog} onAnswer={answer} /> : null}
+			<button type="button" class="btn btn-quiet" onClick={discard}>✕ Cancel</button>
 		</section>
 	);
 }

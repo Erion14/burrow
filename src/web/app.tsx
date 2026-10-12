@@ -10,10 +10,11 @@ import {
 	showScreen,
 	showSessions,
 	withConnection,
+	withDraft,
 	withRemoteOff,
 } from "./lib/app-state";
 import { type Connection, createConnection } from "./lib/conn";
-import { ChatScreen, DiffScreen, SessionsScreen } from "./screens";
+import { ChatScreen, DiffScreen, RemoteOffView, SessionsScreen } from "./screens";
 
 const WAKE_POLL_ATTEMPTS = 30;
 const WAKE_POLL_MS = 1000;
@@ -39,41 +40,43 @@ async function errorText(response: Response): Promise<string> {
 	}
 }
 
-function RemoteOff({ onTurnOn, error, busy }: { onTurnOn: () => void; error: string | null; busy: boolean }) {
-	return (
-		<main class="screen center-screen">
-			<span class="dot dot-stopped big" />
-			<h1>Remote is OFF</h1>
-			<p class="muted">Burrow is not running on the laptop.</p>
-			{error ? <p class="error" role="alert">{error}</p> : null}
-			<button type="button" class="btn btn-primary big-btn" disabled={busy} onClick={onTurnOn}>
-				{busy ? "Turning ON..." : "Turn ON"}
-			</button>
-		</main>
-	);
-}
-
 export function App() {
 	const [state, setState] = useState(startState);
 	const [bootstrapFailed, setBootstrapFailed] = useState(false);
 	const [waking, setWaking] = useState(false);
+	// Bumped whenever the screen opens a session, so a resume reconnects even when
+	// the socket URL itself does not change.
+	const [epoch, setEpoch] = useState(0);
 	const stateRef = useRef(state);
 	stateRef.current = state;
 	const connRef = useRef<Connection | null>(null);
+	const actionsRef = useRef<AppActions | null>(null);
+	const pendingPrompts = useRef(new Map<string, string>());
 
 	const url = socketUrl(state);
 	useEffect(() => {
 		const conn = createConnection({
 			url,
 			onMessage: (message) => setState((current) => applyServerMessage(current, message)),
-			onState: (connection) => setState((current) => withConnection(current, connection)),
+			onState: (connection) => {
+				setState((current) => withConnection(current, connection));
+				if (connection === "open") {
+					setBootstrapFailed(false);
+					if (stateRef.current.screen === "sessions") actionsRef.current?.refreshSessions();
+				}
+			},
+			onAck: (ack) => {
+				const text = pendingPrompts.current.get(ack.clientId);
+				if (ack.status === "error" && text !== undefined) setState((current) => withDraft(current, text));
+				pendingPrompts.current.delete(ack.clientId);
+			},
 		});
 		connRef.current = conn;
 		return () => {
 			conn.close();
 			if (connRef.current === conn) connRef.current = null;
 		};
-	}, [url]);
+	}, [url, epoch]);
 
 	// "Remote is OFF" means both ways in failed: the list fetch and the socket.
 	useEffect(() => {
@@ -112,7 +115,14 @@ export function App() {
 		};
 
 		return {
-			sendPrompt: (text) => connRef.current?.send({ type: "prompt", text }),
+			sendPrompt(text) {
+				const trimmed = text.trim();
+				if (trimmed === "") return;
+				const clientId = connRef.current?.send({ type: "prompt", text: trimmed });
+				if (clientId !== undefined) pendingPrompts.current.set(clientId, trimmed);
+				setState((current) => withDraft(current, ""));
+			},
+			setDraft: (text) => setState((current) => withDraft(current, text)),
 			abort: () => connRef.current?.send({ type: "abort" }),
 			answerDialog: (dialogId, answer) => connRef.current?.send({ type: "answer", dialogId, answer }),
 			discardDialog: (dialogId) => connRef.current?.send({ type: "discard_dialog", dialogId }),
@@ -136,6 +146,7 @@ export function App() {
 				}
 				const { session } = (await response.json()) as { session: SessionSummary };
 				setState((current) => openChat(applyServerMessage(current, { type: "session", session }), session.id));
+				setEpoch((value) => value + 1);
 			},
 			showSessions() {
 				if (location.search !== "") history.replaceState(null, "", "/");
@@ -168,6 +179,7 @@ export function App() {
 			refreshSessions: () => void loadBootstrap(),
 		};
 	}, []);
+	actionsRef.current = actions;
 
 	useEffect(() => actions.refreshSessions(), [actions]);
 
@@ -180,7 +192,7 @@ export function App() {
 				setWaking(false);
 			}
 		};
-		return <RemoteOff onTurnOn={() => void turnOn()} error={state.error} busy={waking} />;
+		return <RemoteOffView onTurnOn={() => void turnOn()} error={state.error} busy={waking} />;
 	}
 
 	const props = { state, actions };

@@ -2,21 +2,22 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-		<meta name="theme-color" content="#1e1e2e" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+		<!-- omp dark-rainforest: statusLineBg, terminal foreground, dimLeaf. Kept in step with styles.css and the manifest. -->
+		<meta name="theme-color" content="#080c0a" />
 		<meta name="color-scheme" content="dark" />
 		<title>Burrow</title>
 		<link rel="manifest" href="/manifest.webmanifest" />
 		<link rel="icon" href="/icons/icon-192.png" type="image/png" />
 		<link rel="apple-touch-icon" href="/icons/icon-192.png" />
 		<style>
-			html, body { margin: 0; background: #1e1e2e; color: #cdd6f4; font-family: system-ui, sans-serif; }
-			#boot { padding: 2rem 1rem; text-align: center; color: #bac2de; }
+			html, body { margin: 0; background: #080c0a; color: #d4ddd5; font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, "Roboto Mono", "Droid Sans Mono", monospace; }
+			#boot { padding: 2.5rem 1rem; text-align: center; color: #6e7e72; font-size: 13px; }
 		</style>
 	</head>
 	<body>
 		<div id="root"></div>
-		<p id="boot">Loading Burrow...</p>
+		<p id="boot">loading burrow…</p>
 		<noscript><p style="padding: 1rem">Burrow needs JavaScript.</p></noscript>
 		<script type="module" src="./main.tsx"></script>
 	</body>

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DialogView, SessionSnapshot, SessionSummary, TranscriptItem } from "../../shared/types";
-import { MAX_TRANSCRIPT_ITEMS, applyServerMessage, initialAppState } from "./app-state";
+import { MAX_TRANSCRIPT_ITEMS, applyServerMessage, initialAppState, withConnection } from "./app-state";
 
 const session: SessionSummary = {
 	id: "s1",
@@ -107,5 +107,38 @@ describe("applyServerMessage", () => {
 		expect(state.items).toHaveLength(MAX_TRANSCRIPT_ITEMS);
 		expect(state.items[0]!.id).toBe("i1");
 		expect(state.items.at(-1)!.id).toBe("new");
+	});
+});
+
+describe("session the server is not running", () => {
+	test("session_not_found marks the session stopped instead of showing an error", () => {
+		const live = applyServerMessage(initialAppState(), { type: "snapshot", snapshot: snapshot([]) });
+		const gone = applyServerMessage(live, { type: "error", code: "session_not_found", message: `Unknown session: ${session.id}` });
+		expect(gone.error).toBeNull();
+		expect(gone.session?.running).toBe(false);
+		expect(gone.session?.status).toBe("stopped");
+		expect(gone.sessions.find((entry) => entry.id === session.id)?.running).toBe(false);
+		expect(gone.status.status).toBe("stopped");
+	});
+
+	test("any other error is still shown", () => {
+		const failed = applyServerMessage(initialAppState(), { type: "error", code: "no_session", message: "nothing is attached" });
+		expect(failed.error).toBe("nothing is attached");
+	});
+});
+
+describe("remote off", () => {
+	test("an open socket clears it", () => {
+		const off = applyServerMessage(initialAppState(), { type: "sessions", sessions: [], repos: [] });
+		expect(off.remoteOff).toBe(false);
+		expect(withConnection(off, "open").remoteOff).toBe(false);
+	});
+});
+
+describe("transcript updates", () => {
+	test("an update for an item the phone no longer has is ignored", () => {
+		const started = applyServerMessage(initialAppState(), { type: "item", item: item("m1", "hello") });
+		const updated = applyServerMessage(started, { type: "item_update", item: item("gone", "stale") });
+		expect(updated.items.map((entry) => entry.id)).toEqual(["m1"]);
 	});
 });

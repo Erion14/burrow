@@ -30,19 +30,23 @@ export function createAlerter(options: AlerterOptions): Alerter {
   function post(sessionId: string, repoName: string, body: string): void {
     const url = options.ntfyUrl;
     if (!url) return;
+    const headers: Record<string, string> = {
+      Click: `${options.origin}/?session=${encodeURIComponent(sessionId)}`,
+    };
+    // fetch rejects a header value outside Latin-1 (a Cyrillic repo name) and
+    // ntfy reads raw header bytes as UTF-8, so only printable ASCII is safe.
+    // NFKD first so accented Latin letters keep their base letter.
+    const title = repoName.normalize("NFKD").replace(/[^\x20-\x7e]/g, "").trim();
+    if (title !== "") headers.Title = title;
+    const report = (err: unknown) => {
+      // A failed push must never disturb a session, but it should not vanish either.
+      console.warn(`ntfy alert for ${repoName} failed: ${err instanceof Error ? err.message : String(err)}`);
+    };
     try {
-      const pending = doFetch(url, {
-        method: "POST",
-        body,
-        headers: {
-          Title: repoName,
-          Click: `${options.origin}/?session=${encodeURIComponent(sessionId)}`,
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-      Promise.resolve(pending).catch(() => {});
-    } catch {
-      // a failed push must never disturb a session
+      const pending = doFetch(url, { method: "POST", body, headers, signal: AbortSignal.timeout(10_000) });
+      Promise.resolve(pending).catch(report);
+    } catch (err) {
+      report(err);
     }
   }
 

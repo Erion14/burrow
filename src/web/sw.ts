@@ -42,35 +42,45 @@ function assetsIn(html: string): string[] {
 	return [...found];
 }
 
-async function installShell(): Promise<void> {
+// Stores a fresh shell and the bundle files it references, then drops the
+// bundle files it no longer references. Used by install, activate and every
+// successful navigation, so the offline shell is at the deployed version
+// without waiting for a second visit.
+async function storeShell(response: Response): Promise<void> {
 	const cache = await caches.open(CACHE);
-	// Fetched as "/" (what navigations request) and stored under SHELL_URL.
-	const response = await fetch("/", { cache: "reload" });
-	if (!response.ok) throw new Error(`shell fetch failed: ${response.status}`);
 	const html = await response.clone().text();
+	const keep = assetsIn(html);
 	await cache.put(SHELL_URL, response);
-	await cache.addAll([...STATIC_FILES.slice(1), ...assetsIn(html)]);
-}
-
-// Hashed bundle names change on every deploy; drop the ones the new shell no
-// longer references so the cache does not grow forever.
-async function dropStaleAssets(): Promise<void> {
-	const cache = await caches.open(CACHE);
-	const shell = await cache.match(SHELL_URL);
-	if (shell === undefined) return;
-	const keep = assetsIn(await shell.text());
+	const missing: string[] = [];
+	for (const path of [...STATIC_FILES.slice(1), ...keep]) {
+		if ((await cache.match(path)) === undefined) missing.push(path);
+	}
+	await cache.addAll(missing);
 	for (const request of await cache.keys()) {
 		const { pathname } = new URL(request.url);
 		if (pathname.startsWith("/assets/") && !keep.includes(pathname)) await cache.delete(request);
 	}
 }
 
-async function navigate(request: Request): Promise<Response> {
+async function refreshShell(): Promise<void> {
+	// Fetched as "/" (what navigations request) and stored under SHELL_URL.
+	const response = await fetch("/", { cache: "reload" });
+	if (!response.ok) throw new Error(`shell fetch failed: ${response.status}`);
+	await storeShell(response);
+}
+
+async function navigate(event: FetchEvent): Promise<Response> {
+	const { request } = event;
 	const cache = await caches.open(CACHE);
 	try {
 		const response = await fetch(request);
 		// With Burrow off, tailscale serve answers 502: that is "down", not a page.
-		if (response.ok) return response;
+		if (response.ok) {
+			if (response.headers.get("content-type")?.includes("text/html")) {
+				event.waitUntil(storeShell(response.clone()).catch(() => undefined));
+			}
+			return response;
+		}
 	} catch {
 		// network failure: fall through to the cached shell
 	}
@@ -89,11 +99,13 @@ async function cacheFirst(request: Request): Promise<Response> {
 }
 
 scope.addEventListener("install", (event) => {
-	event.waitUntil(installShell().then(() => scope.skipWaiting()));
+	event.waitUntil(refreshShell().then(() => scope.skipWaiting()));
 });
 
 scope.addEventListener("activate", (event) => {
-	event.waitUntil(dropStaleAssets().then(() => scope.clients.claim()));
+	// Offline at activation is fine: the install already cached a shell.
+	// Claim either way so the new worker serves this page.
+	event.waitUntil(refreshShell().catch(() => undefined).then(() => scope.clients.claim()));
 });
 
 scope.addEventListener("fetch", (event) => {
@@ -102,7 +114,7 @@ scope.addEventListener("fetch", (event) => {
 	const url = new URL(request.url);
 	if (url.origin !== location.origin || isDynamic(url.pathname)) return;
 	if (request.mode === "navigate") {
-		event.respondWith(navigate(request));
+		event.respondWith(navigate(event));
 		return;
 	}
 	if (isStatic(url.pathname)) event.respondWith(cacheFirst(request));

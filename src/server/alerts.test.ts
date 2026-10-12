@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createAlerter, formatDuration } from "./alerts";
 
 interface Hit {
@@ -42,6 +42,19 @@ describe("alerts", () => {
     make().sessionSettled({ sessionId: "s1", repoName: "burrow", durationMs: 192_000 });
     await waitFor(1);
     expect(hits).toEqual([{ body: "Finished (3m 12s)", title: "burrow", click: "https://box.ts.net/?session=s1" }]);
+  });
+
+  test("a Cyrillic repo name still posts, without a Title header and with the body unchanged", async () => {
+    expect(() => make().sessionSettled({ sessionId: "s1", repoName: "проект", durationMs: 1000 })).not.toThrow();
+    await waitFor(1);
+    expect(hits).toEqual([{ body: "Finished (1s)", title: null, click: "https://box.ts.net/?session=s1" }]);
+  });
+
+  test("non-ASCII characters are dropped from the Title and accents are folded", async () => {
+    const a = make();
+    a.dialogOpened({ sessionId: "s1", repoName: "café-проект 2", method: "ask" });
+    await waitFor(1);
+    expect(hits).toEqual([{ body: "Needs your answer", title: "cafe- 2", click: "https://box.ts.net/?session=s1" }]);
   });
 
   test("dialog posts Needs your answer", async () => {
@@ -96,12 +109,21 @@ describe("alerts", () => {
     expect(unhandled).toEqual([]);
   });
 
-  test("throwing and rejecting fetchImpl are swallowed", async () => {
-    const throwing = createAlerter({ ntfyUrl: "http://x", origin: "o", fetchImpl: (() => { throw new Error("boom"); }) as unknown as typeof fetch });
-    const rejecting = createAlerter({ ntfyUrl: "http://x", origin: "o", fetchImpl: (() => Promise.reject(new Error("boom"))) as unknown as typeof fetch });
-    expect(() => throwing.sessionSettled({ sessionId: "s", repoName: "r", durationMs: 1 })).not.toThrow();
-    expect(() => rejecting.sessionSettled({ sessionId: "s", repoName: "r", durationMs: 1 })).not.toThrow();
-    await Bun.sleep(20);
+  test("throwing and rejecting fetchImpl are swallowed and logged", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const throwing = createAlerter({ ntfyUrl: "http://x", origin: "o", fetchImpl: (() => { throw new Error("boom"); }) as unknown as typeof fetch });
+      const rejecting = createAlerter({ ntfyUrl: "http://x", origin: "o", fetchImpl: (() => Promise.reject(new Error("bang"))) as unknown as typeof fetch });
+      expect(() => throwing.sessionSettled({ sessionId: "s", repoName: "r", durationMs: 1 })).not.toThrow();
+      expect(() => rejecting.sessionSettled({ sessionId: "s", repoName: "r", durationMs: 1 })).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+      const logged = warn.mock.calls.map((args) => args.join(" ")).join("\n");
+      expect(logged).toContain("boom");
+      expect(logged).toContain("bang");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("null ntfyUrl does nothing", async () => {

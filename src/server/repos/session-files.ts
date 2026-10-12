@@ -11,6 +11,10 @@ export interface RecentSession {
 }
 
 const HEADER_LINES = 200;
+export const HEAD_BYTES = 64 * 1024;
+const MAX_FILES = 400;
+const CACHE_MAX = 2000;
+const STAT_BATCH = 64;
 const TITLE_MAX = 60;
 
 interface Parsed {
@@ -33,9 +37,15 @@ function userText(message: unknown): string | null {
 	return null;
 }
 
-/** Only the first lines are read: the header and title sit at the top, and files can be huge. */
+/**
+ * Only the head is read. The session header is line 1 and the title entry follows it, both tiny.
+ * The first-user-message title fallback may sit behind a few tool/system entries, so the bound is
+ * 64 KiB (and at most HEADER_LINES lines): comfortably deep enough for those, ~8x less than before.
+ * A cut-off final line simply fails JSON.parse and is skipped.
+ */
 async function readHead(file: string): Promise<string[]> {
-	const text = await Bun.file(file).slice(0, 512 * 1024).text();
+	sessionFileStats.headReads++;
+	const text = await Bun.file(file).slice(0, HEAD_BYTES).text();
 	return text.split("\n", HEADER_LINES);
 }
 
@@ -69,41 +79,98 @@ function parseHead(lines: string[]): Parsed | null {
 	return { sessionId, cwd, title: title || firstUser.replace(/\s+/g, " ").slice(0, TITLE_MAX) || sessionId };
 }
 
+export interface ListOptions {
+	limit?: number;
+	/** Only files modified within this many days are considered. Default 30; Infinity disables. */
+	maxAgeDays?: number;
+	/** Upper bound on files considered (newest by mtime first). Default 400. */
+	maxFiles?: number;
+	/** Clock injection for tests. */
+	now?: () => number;
+}
+
+/** Observable counters so tests can prove what was (not) read. */
+export const sessionFileStats = { headReads: 0 };
+
+interface CacheEntry {
+	mtimeMs: number;
+	size: number;
+	parsed: Parsed | null;
+}
+const headCache = new Map<string, CacheEntry>();
+
+export function clearSessionHeaderCache(): void {
+	headCache.clear();
+}
+
+function remember(file: string, entry: CacheEntry): void {
+	headCache.delete(file);
+	headCache.set(file, entry);
+	// Map iterates in insertion order, so the first key is the least recently used.
+	while (headCache.size > CACHE_MAX) {
+		const oldest = headCache.keys().next().value;
+		if (oldest === undefined) break;
+		headCache.delete(oldest);
+	}
+}
+
+async function parsedFor(file: string, mtimeMs: number, size: number): Promise<Parsed | null> {
+	const hit = headCache.get(file);
+	if (hit && hit.mtimeMs === mtimeMs && hit.size === size) {
+		remember(file, hit);
+		return hit.parsed;
+	}
+	const parsed = parseHead(await readHead(file));
+	remember(file, { mtimeMs, size, parsed });
+	return parsed;
+}
+
 export async function listRecentSessions(
 	sessionsDir: string,
 	allowedPaths: string[],
-	options: { limit?: number; maxAgeDays?: number } = {},
+	options: ListOptions = {},
 ): Promise<RecentSession[]> {
 	const limit = options.limit ?? 30;
-	const minMtime = options.maxAgeDays === undefined ? 0 : Date.now() - options.maxAgeDays * 86_400_000;
+	const maxFiles = options.maxFiles ?? MAX_FILES;
+	const now = options.now ?? Date.now;
+	const minMtime = now() - (options.maxAgeDays ?? 30) * 86_400_000;
 	const allowed = new Set((await listRepos(allowedPaths)).map((r) => r.path));
 
-	const candidates: { file: string; mtimeMs: number }[] = [];
+	const paths: string[] = [];
 	try {
 		for await (const folder of await opendir(sessionsDir)) {
 			if (!folder.isDirectory()) continue;
 			const dir = join(sessionsDir, folder.name);
 			try {
 				for await (const f of await opendir(dir)) {
-					if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
-					const file = join(dir, f.name);
-					try {
-						const { mtimeMs } = await stat(file);
-						if (mtimeMs >= minMtime) candidates.push({ file, mtimeMs });
-					} catch {}
+					if (f.isFile() && f.name.endsWith(".jsonl")) paths.push(join(dir, f.name));
 				}
 			} catch {}
 		}
 	} catch {
 		return [];
 	}
+
+	// Stat only; nothing is opened until the mtime filter and the file cap have been applied.
+	const candidates: { file: string; mtimeMs: number; size: number }[] = [];
+	for (let i = 0; i < paths.length; i += STAT_BATCH) {
+		await Promise.all(
+			paths.slice(i, i + STAT_BATCH).map(async (file) => {
+				try {
+					const { mtimeMs, size } = await stat(file);
+					if (mtimeMs >= minMtime) candidates.push({ file, mtimeMs, size });
+				} catch {}
+			}),
+		);
+	}
 	candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	candidates.length = Math.min(candidates.length, maxFiles);
 
 	const out: RecentSession[] = [];
-	for (const { file, mtimeMs } of candidates) {
+	for (const { file, mtimeMs, size } of candidates) {
 		if (out.length >= limit) break;
 		try {
-			const parsed = parseHead(await readHead(file));
+			const parsed = await parsedFor(file, mtimeMs, size);
 			if (parsed === null) continue;
 			const realCwd = await realpath(parsed.cwd);
 			if (!allowed.has(realCwd)) continue;

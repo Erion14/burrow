@@ -25,6 +25,8 @@ export interface SessionManagerOptions {
 	alerter?: Alerter;
 	env?: Record<string, string>;
 	now?: () => Date;
+	/** Deadline for the post-handshake setup commands. Defaults to SETUP_TIMEOUT_MS. */
+	setupTimeoutMs?: number;
 }
 
 const LIST_LIMIT = 30;
@@ -35,6 +37,8 @@ const MAX_PAGES = 20;
 const HEADER_BYTES = 64 * 1024;
 const CLOSE_WAIT_MS = 6000;
 const KILL_WAIT_MS = 2000;
+const SETUP_TIMEOUT_MS = 30_000;
+const WITHDRAWN_NOTICE_MAX = 300;
 
 type Rec = Record<string, unknown>;
 
@@ -56,7 +60,8 @@ interface LiveSession {
 	proc: OmpProcess;
 	transcript: Transcript;
 	status: StatusTracker;
-	dialog: DialogView | null;
+	/** Open dialogs, oldest first; the phone sees the first one. */
+	dialogs: DialogView[];
 	queued: QueuedMessages;
 	sessionFile: string | null;
 	title: string | null;
@@ -69,6 +74,8 @@ interface LiveSession {
 	ready: boolean;
 	finalised: boolean;
 	stopping: boolean;
+	/** Resolves once finalise() ran. */
+	ended: PromiseWithResolvers<void>;
 }
 
 function queueTexts(raw: unknown): string[] {
@@ -90,7 +97,14 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 	const spawn = options.spawn ?? startOmpProcess;
 	const alerter = options.alerter ?? createAlerter({ ntfyUrl: config.ntfyUrl, origin: config.origin });
 	const now = options.now ?? (() => new Date());
+	const setupTimeoutMs = options.setupTimeoutMs ?? SETUP_TIMEOUT_MS;
 	const running = new Map<string, LiveSession>();
+	/** Resumes in flight, by resolved session file: concurrent callers share one. */
+	const resumes = new Map<string, Promise<Result<SessionSummary>>>();
+	/** Processes spawned but not yet registered in `running`. */
+	const launching = new Set<OmpProcess>();
+	/** Launches in flight, so shutdown() can wait for them to give up. */
+	const launches = new Set<Promise<unknown>>();
 	const listeners = new Set<(sessionId: string | null, message: ServerMessage) => void>();
 	let closed = false;
 
@@ -110,7 +124,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
 	function currentStatus(live: LiveSession) {
 		const view = live.status.snapshot();
-		return live.dialog ? { ...view, status: "needs_answer" as const } : view;
+		return live.dialogs.length > 0 ? { ...view, status: "needs_answer" as const } : view;
 	}
 
 	function summaryOf(live: LiveSession): SessionSummary {
@@ -147,15 +161,21 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 		}
 	}
 
-	function clearDialog(live: LiveSession): void {
-		if (!live.dialog) return;
-		live.dialog = null;
-		emit(live, { type: "dialog", dialog: null });
+	function showDialog(live: LiveSession): void {
+		emit(live, { type: "dialog", dialog: live.dialogs[0] ?? null });
 		emitStatus(live);
 	}
 
+	/** Drops a dialog; when it was the open one, the next one (or none) is shown. */
+	function removeDialog(live: LiveSession, id: unknown): void {
+		const index = live.dialogs.findIndex((dialog) => dialog.id === id);
+		if (index === -1) return;
+		live.dialogs.splice(index, 1);
+		if (index === 0) showDialog(live);
+	}
+
 	function ownPids(): Set<number> {
-		return new Set([...running.values()].map((live) => live.proc.pid));
+		return new Set([...[...running.values()].map((live) => live.proc.pid), ...[...launching].map((proc) => proc.pid)]);
 	}
 
 	async function refreshState(live: LiveSession): Promise<void> {
@@ -171,15 +191,15 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 			case "extension_ui_request": {
 				const method = typeof event.method === "string" ? event.method : "";
 				if (method === "cancel") {
-					if (live.dialog && live.dialog.id === event.targetId) clearDialog(live);
+					removeDialog(live, event.targetId);
 					return;
 				}
 				if (!alerter.needsAnswer(method)) return;
 				const dialog = toDialogView(event);
-				if (!dialog) return;
-				live.dialog = dialog;
-				emit(live, { type: "dialog", dialog });
-				emitStatus(live);
+				if (!dialog || live.dialogs.some((open) => open.id === dialog.id)) return;
+				live.dialogs.push(dialog);
+				if (live.dialogs.length > 1) return;
+				showDialog(live);
 				if (live.ready) alerter.dialogOpened({ sessionId: live.id, repoName: live.repo.name, method });
 				return;
 			}
@@ -242,14 +262,16 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 	function finalise(live: LiveSession, notice: string | null): void {
 		if (live.finalised) return;
 		live.finalised = true;
-		running.delete(live.id);
-		if (live.dialog) {
-			live.dialog = null;
+		// A process that lost the race for its id during setup must not unregister the winner.
+		if (running.get(live.id) === live) running.delete(live.id);
+		if (live.dialogs.length > 0) {
+			live.dialogs = [];
 			emit(live, { type: "dialog", dialog: null });
 		}
 		live.updatedAt = now();
 		emitSummary(live);
 		if (notice !== null) emit(live, live.transcript.appendNotice(notice));
+		live.ended.resolve();
 	}
 
 	async function sessionHeaderCwd(file: string): Promise<string | null> {
@@ -263,7 +285,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 		return null;
 	}
 
-	/** Checks the file is a session file under sessionsDir whose header cwd is the allowlisted repo, and nobody else holds it. */
+	/** Checks the file is a session file under sessionsDir whose header cwd is the allowlisted repo. */
 	async function checkResumeFile(file: string, repoPath: string): Promise<Result<string>> {
 		let realFile: string;
 		let realDir: string;
@@ -285,9 +307,17 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 			allowed = resolved.ok && resolved.value.path === repoPath;
 		}
 		if (!allowed) return fail("repo_not_allowed", "Session file does not belong to this allowlisted repo");
-		const owners = await sessionFileOwners(realDir, { excludePids: ownPids(), ownPid: process.pid });
-		if (owners.has(realFile)) return fail("open_at_laptop", "That session is open in another omp process");
 		return { ok: true, value: realFile };
+	}
+
+	/** Whether a process other than Burrow's own children has the session file open. */
+	async function heldElsewhere(file: string): Promise<boolean> {
+		let dir = config.sessionsDir;
+		try {
+			dir = await realpath(config.sessionsDir);
+		} catch {}
+		const owners = await sessionFileOwners(dir, { excludePids: ownPids(), ownPid: process.pid });
+		return owners.has(file);
 	}
 
 	function spawnEnv(): Record<string, string> {
@@ -362,36 +392,82 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 		if (closed) return fail("shutting_down", "Burrow is shutting down");
 		const repo = await resolveRepo(config.repos, input.repoPath);
 		if (!repo.ok) return repo;
+		if (input.sessionFile === undefined) return launch(repo.value, undefined);
 
-		let resumeFile: string | undefined;
-		if (input.sessionFile !== undefined) {
-			const checked = await checkResumeFile(input.sessionFile, repo.value.path);
-			if (!checked.ok) return checked;
-			resumeFile = checked.value;
-			for (const live of running.values()) {
-				if (live.sessionFile === resumeFile) return { ok: true, value: summaryOf(live) };
-			}
+		const checked = await checkResumeFile(input.sessionFile, repo.value.path);
+		if (!checked.ok) return checked;
+		const file = checked.value;
+		const inflight = resumes.get(file);
+		if (inflight) return inflight;
+		const work = resume(repo.value, file);
+		resumes.set(file, work);
+		const forget = () => resumes.delete(file);
+		void work.then(forget, forget);
+		return work;
+	}
+
+	/** One writer per session file: reuse a live session, wait out a stopping one, refuse a foreign holder. */
+	async function resume(repo: LiveSession["repo"], file: string): Promise<Result<SessionSummary>> {
+		for (;;) {
+			const existing = [...running.values()].find((live) => live.sessionFile === file);
+			if (!existing) break;
+			if (!existing.stopping) return { ok: true, value: summaryOf(existing) };
+			await existing.ended.promise;
 		}
+		if (await heldElsewhere(file)) return fail("open_at_laptop", "That session is open in another omp process");
+		return launch(repo, file);
+	}
 
+	function launch(repo: LiveSession["repo"], resumeFile: string | undefined): Promise<Result<SessionSummary>> {
+		const work = spawnSession(repo, resumeFile).catch((error: unknown) => fail("setup_failed", errorMessage(error)));
+		launches.add(work);
+		void work.then(() => launches.delete(work));
+		return work;
+	}
+
+	async function spawnSession(repo: LiveSession["repo"], resumeFile: string | undefined): Promise<Result<SessionSummary>> {
+		if (closed) return fail("shutting_down", "Burrow is shutting down");
 		let proc: OmpProcess;
 		try {
 			proc = await spawn({
 				command: config.ompCommand,
-				cwd: repo.value.path,
+				cwd: repo.path,
 				env: spawnEnv(),
 				...(resumeFile === undefined ? {} : { resumeFile }),
 			});
 		} catch (error) {
 			return fail("spawn_failed", errorMessage(error));
 		}
+		launching.add(proc);
+		try {
+			return await register(proc, repo, resumeFile);
+		} finally {
+			launching.delete(proc);
+		}
+	}
+
+	async function register(
+		proc: OmpProcess,
+		repo: LiveSession["repo"],
+		resumeFile: string | undefined,
+	): Promise<Result<SessionSummary>> {
+		if (closed) {
+			await closeProcess(proc);
+			return fail("shutting_down", "Burrow is shutting down");
+		}
+		// The writer check before spawn can race another omp opening the file.
+		if (resumeFile !== undefined && (await heldElsewhere(resumeFile))) {
+			await closeProcess(proc);
+			return fail("open_at_laptop", "That session is open in another omp process");
+		}
 
 		const live: LiveSession = {
 			id: proc.sessionId ?? randomUUID(),
-			repo: repo.value,
+			repo,
 			proc,
 			transcript: createTranscript({ now }),
 			status: createStatusTracker(),
-			dialog: null,
+			dialogs: [],
 			queued: { steering: [], followUp: [] },
 			sessionFile: proc.sessionFile ?? resumeFile ?? null,
 			title: null,
@@ -402,6 +478,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 			ready: false,
 			finalised: false,
 			stopping: false,
+			ended: Promise.withResolvers<void>(),
 		};
 		proc.onEvent((event) => {
 			try {
@@ -416,19 +493,42 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 		});
 
 		let problem: string | null;
+		let timedOut = false;
+		let timer: NodeJS.Timeout | undefined;
+		const deadline = new Promise<"timeout">((resolve) => {
+			timer = setTimeout(() => resolve("timeout"), setupTimeoutMs);
+		});
 		try {
-			problem = await setup(live, resumeFile !== undefined);
+			const outcome = await Promise.race([
+				setup(live, resumeFile !== undefined),
+				deadline,
+				live.ended.promise.then(() => "exited" as const),
+			]);
+			timedOut = outcome === "timeout";
+			if (outcome === "timeout") problem = `omp did not finish setup within ${setupTimeoutMs} ms`;
+			else if (outcome === "exited") problem = "omp exited during setup";
+			else problem = outcome;
 		} catch (error) {
 			problem = errorMessage(error);
+		} finally {
+			clearTimeout(timer);
 		}
-		if (problem !== null || live.finalised) {
-			live.finalised = true;
-			await closeProcess(proc);
+		if (closed || problem !== null || live.finalised) {
+			live.stopping = true;
+			if (timedOut) {
+				proc.kill();
+				await Promise.race([proc.close(), sleep(KILL_WAIT_MS)]);
+			} else {
+				await closeProcess(proc);
+			}
+			finalise(live, null);
+			if (closed) return fail("shutting_down", "Burrow is shutting down");
 			return fail("setup_failed", problem ?? "omp exited during setup");
 		}
 		if (running.has(live.id)) {
-			live.finalised = true;
+			live.stopping = true;
 			await closeProcess(proc);
+			finalise(live, null);
 			return fail("already_running", "That session is already running");
 		}
 		live.lastStatus = currentStatus(live).status;
@@ -476,12 +576,12 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
 	function snapshot(sessionId: string): SessionSnapshot | null {
 		const live = running.get(sessionId);
-		if (!live) return null;
+		if (!live || live.stopping) return null;
 		const { items, subagents, truncated } = live.transcript.snapshot();
 		return {
 			session: summaryOf(live),
 			items,
-			dialog: live.dialog,
+			dialog: live.dialogs[0] ?? null,
 			subagents,
 			queued: live.queued,
 			status: currentStatus(live),
@@ -496,25 +596,43 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 				return res.ok ? { status: "ok" } : { status: "error", error: res.error };
 			}
 			case "abort": {
-				const res = await live.proc.send({ type: "abort" });
-				return res.ok ? { status: "ok" } : { status: "error", error: res.error };
+				// A plain abort lets queued follow-ups run in a fresh turn; this withdraws them first.
+				const res = await live.proc.send<Rec>({ type: "abort_and_restore_queue" });
+				if (!res.ok) {
+					// Older runtimes reject the command.
+					const fallback = await live.proc.send({ type: "abort" });
+					return fallback.ok ? { status: "ok" } : { status: "error", error: fallback.error };
+				}
+				const data = isRec(res.data) ? res.data : {};
+				const withdrawn = [...queueTexts(data.steering), ...queueTexts(data.followUp)]
+					.map((text) => text.replace(/\s+/g, " ").trim())
+					.filter((text) => text !== "");
+				if (withdrawn.length > 0) {
+					let text = `Stopped. Not sent, copy back if still wanted: ${withdrawn.map((t) => `“${t}”`).join(" · ")}`;
+					if (data.truncated === true) text += " (more were lost)";
+					if (text.length > WITHDRAWN_NOTICE_MAX) text = `${text.slice(0, WITHDRAWN_NOTICE_MAX - 1)}…`;
+					emit(live, live.transcript.appendNotice(text));
+				}
+				return { status: "ok" };
 			}
 			case "answer": {
-				if (!live.dialog || live.dialog.id !== message.dialogId) {
+				const dialog = live.dialogs[0];
+				if (!dialog || dialog.id !== message.dialogId) {
 					return { status: "error", error: "No open dialog with that id" };
 				}
-				const res = await live.proc.send(toUiResponse(live.dialog, message.answer));
+				const res = await live.proc.send(toUiResponse(dialog, message.answer));
 				if (!res.ok) return { status: "error", error: res.error };
-				clearDialog(live);
+				removeDialog(live, dialog.id);
 				return { status: "ok" };
 			}
 			case "discard_dialog": {
-				if (!live.dialog || live.dialog.id !== message.dialogId) {
+				const dialog = live.dialogs[0];
+				if (!dialog || dialog.id !== message.dialogId) {
 					return { status: "error", error: "No open dialog with that id" };
 				}
-				const res = await live.proc.send(toCancelResponse(live.dialog.id));
+				const res = await live.proc.send(toCancelResponse(dialog.id));
 				if (!res.ok) return { status: "error", error: res.error };
-				clearDialog(live);
+				removeDialog(live, dialog.id);
 				return { status: "ok" };
 			}
 			case "stop_session": {
@@ -526,7 +644,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
 	async function deliver(sessionId: string, message: ClientMessage): Promise<Delivery> {
 		const live = running.get(sessionId);
-		if (!live) return { status: "error", error: "session_not_found" };
+		if (!live || live.stopping) return { status: "error", error: "session_not_found" };
 		if (live.applied.has(message.clientId)) return { status: "duplicate" };
 		live.applied.add(message.clientId);
 		if (live.applied.size > APPLIED_LIMIT) {
@@ -547,6 +665,10 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 	async function stop(sessionId: string, _reason: StopReason): Promise<Result<null>> {
 		const live = running.get(sessionId);
 		if (!live) return fail("session_not_found", `No running session ${sessionId}`);
+		if (live.stopping) {
+			await live.ended.promise;
+			return { ok: true, value: null };
+		}
 		live.stopping = true;
 		await closeProcess(live.proc);
 		finalise(live, null);
@@ -568,7 +690,11 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 		runningIds: () => [...running.keys()],
 		async shutdown() {
 			closed = true;
-			await Promise.allSettled([...running.keys()].map((id) => stop(id, "shutdown")));
+			await Promise.allSettled([
+				...[...running.keys()].map((id) => stop(id, "shutdown")),
+				...[...launching].map((proc) => closeProcess(proc)),
+				...launches,
+			]);
 		},
 	};
 }

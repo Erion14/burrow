@@ -115,7 +115,11 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 const BunWebSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
 
 async function api(path: string, init: RequestInit = {}, withIdentity = true): Promise<Response> {
-	return fetch(`${base}${path}`, { ...init, headers: { ...(withIdentity ? headers() : {}), ...(init.headers as Record<string, string> | undefined) } });
+	// The Origin is required on state-changing requests; harmless on GET.
+	return fetch(`${base}${path}`, {
+		...init,
+		headers: { ...(withIdentity ? headers({ Origin: ORIGIN }) : {}), ...(init.headers as Record<string, string> | undefined) },
+	});
 }
 
 class Client {

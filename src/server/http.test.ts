@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +41,10 @@ function makeConfig(): BurrowConfig {
 
 function api(path: string, init: RequestInit = {}, authed = true): Promise<Response> {
 	const headers = new Headers(init.headers);
-	if (authed) headers.set("tailscale-user-login", OWNER);
+	if (authed) {
+		headers.set("tailscale-user-login", OWNER);
+		if (!headers.has("origin")) headers.set("origin", ORIGIN);
+	}
 	return fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers });
 }
 
@@ -110,6 +113,71 @@ describe("auth", () => {
 	test("a different identity is 403", async () => {
 		const res = await api("/health", { headers: { "tailscale-user-login": "other@example.com" } }, false);
 		expect(res.status).toBe(403);
+	});
+});
+
+describe("origin on state-changing requests", () => {
+	function raw(path: string, method: string, headers: Record<string, string>): Promise<Response> {
+		return fetch(`http://127.0.0.1:${server.port}${path}`, {
+			method,
+			headers: { ...AUTH, "content-type": "application/json", ...headers },
+			body: method === "GET" ? undefined : JSON.stringify({ repoPath: repoDir }),
+		});
+	}
+
+	test("a POST with a foreign Origin is 403 and never reaches the manager", async () => {
+		for (const path of ["/api/sessions", "/api/sessions/s1/stop"]) {
+			const res = await raw(path, "POST", { origin: "https://evil.example" });
+			expect(res.status).toBe(403);
+			expect((await errorBody(res)).code).toBe("forbidden_origin");
+		}
+		expect(manager.startCalls).toHaveLength(0);
+		expect(manager.stopCalls).toHaveLength(0);
+	});
+
+	test("a POST with no Origin is 403 unless Sec-Fetch-Site says same-origin or none", async () => {
+		for (const headers of [{}, { "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "same-site" }] as Record<string, string>[]) {
+			const res = await raw("/api/sessions", "POST", headers);
+			expect(res.status).toBe(403);
+			expect((await errorBody(res)).code).toBe("forbidden_origin");
+		}
+		expect(manager.startCalls).toHaveLength(0);
+		for (const site of ["same-origin", "none"]) {
+			expect((await raw("/api/sessions", "POST", { "sec-fetch-site": site })).status).toBe(200);
+		}
+		expect(manager.startCalls).toHaveLength(2);
+	});
+
+	test("an Origin of null or a variant of the Burrow origin is 403 even with same-origin fetch metadata", async () => {
+		for (const origin of ["null", `${ORIGIN}/`, "http://burrow.tailnet.ts.net"]) {
+			const res = await raw("/api/sessions", "POST", { origin, "sec-fetch-site": "same-origin" });
+			expect(res.status).toBe(403);
+		}
+		expect(manager.startCalls).toHaveLength(0);
+	});
+
+	test("the same POST from the Burrow Origin passes", async () => {
+		const res = await raw("/api/sessions", "POST", { origin: ORIGIN });
+		expect(res.status).toBe(200);
+		expect(manager.startCalls).toEqual([{ repoPath: repoDir }]);
+	});
+
+	test("GET needs no Origin", async () => {
+		expect((await raw("/api/bootstrap", "GET", {})).status).toBe(200);
+		expect((await raw("/health", "GET", { origin: "https://evil.example" })).status).toBe(200);
+	});
+});
+
+describe("slow requests", () => {
+	test("Bun.serve is started with the idle timeout disabled", () => {
+		const spy = spyOn(Bun, "serve");
+		try {
+			const extra = createHttpServer({ config: makeConfig(), manager, hub, diff: diffImpl });
+			extra.stop(true);
+			expect(spy.mock.calls[0]?.[0]).toMatchObject({ idleTimeout: 0 });
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });
 

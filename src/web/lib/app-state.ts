@@ -20,6 +20,7 @@ import type {
  */
 export interface AppActions {
 	sendPrompt(text: string): void;
+	setDraft(text: string): void;
 	abort(): void;
 	answerDialog(dialogId: string, answer: DialogAnswer): void;
 	discardDialog(dialogId: string): void;
@@ -51,6 +52,8 @@ export interface AppState {
 	status: StatusView;
 	sessions: SessionSummary[];
 	repos: RepoOption[];
+	/** The message being typed; kept here so switching screens does not lose it. */
+	draft: string;
 	error: string | null;
 }
 
@@ -73,6 +76,7 @@ export function initialAppState(): AppState {
 		status: IDLE_STATUS,
 		sessions: [],
 		repos: [],
+		draft: "",
 		error: null,
 	};
 }
@@ -120,8 +124,10 @@ export function applyServerMessage(state: AppState, message: ServerMessage): App
 			return { ...state, remoteOff: false, sessions: message.sessions, repos: message.repos };
 		case "item":
 			return { ...state, items: withItem(state.items, message.item) };
-		case "item_update":
+		case "item_update": {
+			if (!state.items.some((item) => item.id === message.item.id)) return state;
 			return { ...state, items: withItem(state.items, message.item) };
+		}
 		case "delta": {
 			const index = state.items.findIndex((item) => item.id === message.itemId);
 			if (index < 0) return state;
@@ -142,13 +148,29 @@ export function applyServerMessage(state: AppState, message: ServerMessage): App
 			return { ...state, session: message.session, sessions: mergeSession(state.sessions, message.session) };
 		case "ack":
 			return message.status === "error" ? { ...state, error: message.error ?? "message rejected" } : state;
-		case "error":
-			return { ...state, error: message.message };
+		case "error": {
+			// Not running is a state, not a failure: show Resume, not an error banner.
+			if (message.code !== "session_not_found") return { ...state, error: message.message };
+			const stopped = (session: SessionSummary | null): SessionSummary | null =>
+				session === null ? null : { ...session, running: false, status: "stopped" };
+			return {
+				...state,
+				error: null,
+				session: stopped(state.session),
+				sessions: state.sessions.map((session) => (session.id === state.sessionId ? { ...session, running: false, status: "stopped" } : session)),
+				status: { status: "stopped", isSettled: true, hasPendingAsyncWork: false },
+			};
+		}
 	}
 }
 
 export function withConnection(state: AppState, connection: ConnectionState): AppState {
-	return { ...state, connection };
+	// An open socket proves Burrow is up, whatever the last fetch said.
+	return connection === "open" ? { ...state, connection, remoteOff: false } : { ...state, connection };
+}
+
+export function withDraft(state: AppState, draft: string): AppState {
+	return { ...state, draft };
 }
 
 export function withRemoteOff(state: AppState, remoteOff: boolean): AppState {

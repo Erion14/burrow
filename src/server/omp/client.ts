@@ -15,6 +15,10 @@ const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const CLOSE_KILL_AFTER_MS = 10_000;
 // The ready frame advertises this limit as maxReassembledFrameBytes.
 const MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024;
+// Only the tail of stderr is kept: omp can run for days and only the end explains an exit.
+const STDERR_KEEP = 16 * 1024;
+// Ids whose response already arrived, remembered so a late error for one is reported.
+const ANSWERED_KEEP = 256;
 
 type Frame = Record<string, unknown>;
 
@@ -46,6 +50,7 @@ export async function startOmpProcess(options: StartOmpProcessOptions): Promise<
 	// Events that arrive before the first subscriber (handshake gap) are replayed to it.
 	let backlog: OmpEvent[] | null = [];
 	let stderr = "";
+	const answered = new Set<string>();
 	let nextId = 1;
 	let exited = false;
 	let exitInfo: OmpExitInfo | null = null;
@@ -53,6 +58,14 @@ export async function startOmpProcess(options: StartOmpProcessOptions): Promise<
 	let sessionFile: string | null = null;
 	let killTimer: NodeJS.Timeout | undefined;
 	let onReady: ((frame: Frame) => void) | null = null;
+
+	function deliverEvent(event: OmpEvent): void {
+		if (backlog) {
+			backlog.push(event);
+			return;
+		}
+		for (const handler of [...eventHandlers]) handler(event);
+	}
 
 	function dispatch(frame: Frame): void {
 		if (frame.type === "ready" && onReady) {
@@ -64,23 +77,30 @@ export async function startOmpProcess(options: StartOmpProcessOptions): Promise<
 		if (frame.type === "response") {
 			const id = frame.id;
 			if (typeof id !== "string") return;
+			const error = typeof frame.error === "string" ? frame.error : "command failed";
 			const resolve = pending.get(id);
-			if (!resolve) return;
+			if (!resolve) {
+				// A command can fail after it was admitted and acknowledged; that error
+				// reuses the id, and nobody awaits it any more.
+				if (frame.success !== true && answered.has(id)) {
+					const command = typeof frame.command === "string" ? frame.command : "command";
+					deliverEvent({ type: "notice", level: "error", message: `${command} failed: ${error}` });
+				}
+				return;
+			}
 			pending.delete(id);
+			answered.add(id);
+			if (answered.size > ANSWERED_KEEP) answered.delete(answered.values().next().value as string);
 			if (frame.success === true) resolve({ ok: true, data: frame.data });
 			else {
 				const code = typeof frame.code === "string" ? frame.code : undefined;
-				resolve({ ok: false, error: typeof frame.error === "string" ? frame.error : "command failed", ...(code ? { code } : {}) });
+				resolve({ ok: false, error, ...(code ? { code } : {}) });
 			}
 			return;
 		}
 		const event = frame as OmpEvent;
 		if (typeof event.type !== "string") return;
-		if (backlog) {
-			backlog.push(event);
-			return;
-		}
-		for (const handler of [...eventHandlers]) handler(event);
+		deliverEvent(event);
 	}
 
 	async function drainStdout(): Promise<void> {
@@ -100,9 +120,9 @@ export async function startOmpProcess(options: StartOmpProcessOptions): Promise<
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
-			stderr += text.decode(value, { stream: true });
+			stderr = (stderr + text.decode(value, { stream: true })).slice(-STDERR_KEEP);
 		}
-		stderr += text.decode();
+		stderr = (stderr + text.decode()).slice(-STDERR_KEEP);
 	}
 
 	// Reading starts immediately and continues after stdin closes, or omp cannot exit.

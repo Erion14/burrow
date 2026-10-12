@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Server } from "bun";
 import type { BurrowConfig } from "../server/config";
 import { createWakeServer } from "./server";
@@ -18,7 +18,8 @@ function start(runner: (action: "on" | "off") => Promise<void>) {
 	return `http://127.0.0.1:${server.port}`;
 }
 
-const auth = { "Tailscale-User-Login": OWNER };
+const identity = { "Tailscale-User-Login": OWNER };
+const auth = { ...identity, Origin: config.origin };
 
 describe("wake server", () => {
 	test("denies requests without identity and does not run", async () => {
@@ -87,5 +88,47 @@ describe("wake server", () => {
 		server?.stop(true);
 		server = null;
 		await expect(fetch(`${base}/wake`, { headers: auth })).rejects.toThrow();
+	});
+
+	test("a POST with a foreign Origin or none at all is 403 and does not run", async () => {
+		const calls: string[] = [];
+		const base = start(async (a) => void calls.push(a));
+		for (const headers of [
+			{ ...identity, Origin: "https://evil.example" },
+			identity,
+			{ ...identity, "Sec-Fetch-Site": "cross-site" },
+		]) {
+			for (const p of ["/wake/off", "/wake"]) {
+				const res = await fetch(`${base}${p}`, { method: "POST", headers });
+				expect(res.status).toBe(403);
+				expect((await res.json()).error.code).toBe("forbidden_origin");
+			}
+		}
+		expect(calls).toEqual([]);
+	});
+
+	test("a POST without Origin passes when Sec-Fetch-Site is same-origin or none", async () => {
+		const calls: string[] = [];
+		const base = start(async (a) => void calls.push(a));
+		for (const site of ["same-origin", "none"]) {
+			const res = await fetch(`${base}/wake/off`, { method: "POST", headers: { ...identity, "Sec-Fetch-Site": site } });
+			expect(res.status).toBe(200);
+		}
+		expect(calls).toEqual(["off", "off"]);
+	});
+
+	test("GET health needs no Origin", async () => {
+		const base = start(async () => {});
+		expect((await fetch(`${base}/wake`, { headers: identity })).status).toBe(200);
+	});
+
+	test("Bun.serve is started with the idle timeout disabled", () => {
+		const spy = spyOn(Bun, "serve");
+		try {
+			start(async () => {});
+			expect(spy.mock.calls[0]?.[0]).toMatchObject({ idleTimeout: 0 });
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

@@ -6,7 +6,7 @@ import type { ServerMessage } from "../../shared/protocol";
 import { createAlerter } from "../alerts";
 import type { BurrowConfig } from "../config";
 import { startOmpProcess } from "../omp/client";
-import type { OmpCommand, OmpProcess } from "../omp/port";
+import type { OmpCommand, OmpProcess, RpcResult } from "../omp/port";
 import { isSessionOpen } from "../repos/open-proc";
 import { createSessionManager } from "./manager";
 import type { SessionManagerPort } from "./port";
@@ -32,6 +32,15 @@ let clock: number;
 let manager: SessionManagerPort | null;
 let holders: Array<ReturnType<typeof Bun.spawn>>;
 let events: Array<{ sessionId: string | null; message: ServerMessage }>;
+/** A command type the wrapper never lets omp answer, standing in for a hung setup step. */
+let hangCommand: string | null;
+/** Canned answers for commands the fake does not know. */
+let canned: Record<string, RpcResult>;
+/** While set, close() waits for it before closing stdin, so a stop stays in progress. */
+let closeGate: Promise<void> | null;
+/** Set to a session file: right after a spawn, another process opens it. */
+let grabAfterSpawn: string | null;
+let setupTimeoutMs: number | undefined;
 
 beforeEach(() => {
 	root = realpathSync(mkdtempSync(join(tmpdir(), "burrow-mgr-")));
@@ -50,6 +59,11 @@ beforeEach(() => {
 	manager = null;
 	holders = [];
 	events = [];
+	hangCommand = null;
+	canned = {};
+	closeGate = null;
+	grabAfterSpawn = null;
+	setupTimeoutMs = undefined;
 	ntfy = Bun.serve({
 		port: 0,
 		hostname: "127.0.0.1",
@@ -86,10 +100,17 @@ function make(extraArgs: string[] = []): SessionManagerPort {
 		config,
 		now: () => new Date(clock),
 		alerter: createAlerter({ ntfyUrl: config.ntfyUrl, origin: config.origin }),
+		...(setupTimeoutMs === undefined ? {} : { setupTimeoutMs }),
 		spawn: async (options) => {
 			spawnCalls += 1;
 			const proc = await startOmpProcess(options);
 			procs.push(proc);
+			if (grabAfterSpawn !== null) {
+				const file = grabAfterSpawn;
+				holders.push(Bun.spawn(["bun", FAKE, "--hold-file", file], { stdin: "pipe", stdout: "ignore", stderr: "ignore" }));
+				// Polls /proc like the existing resume test: there is no event for "another process opened the file".
+				for (let i = 0; i < 500 && !(await isSessionOpen(file)); i++) await Bun.sleep(10);
+			}
 			return {
 				get pid() {
 					return proc.pid;
@@ -108,11 +129,14 @@ function make(extraArgs: string[] = []): SessionManagerPort {
 					if (command.type === "get_messages_page" && seedMessages) {
 						return Promise.resolve({ ok: true, data: { messages: seedMessages, totalMessages: seedMessages.length } } as never);
 					}
+					if (command.type === hangCommand) return proc.send({ type: "__hold" });
+					const reply = canned[command.type];
+					if (reply) return Promise.resolve(reply as never);
 					return proc.send(command);
 				},
 				onEvent: (handler) => proc.onEvent(handler),
 				onExit: (handler) => proc.onExit(handler),
-				close: () => proc.close(),
+				close: () => (closeGate ?? Promise.resolve()).then(() => proc.close()),
 				kill: () => proc.kill(),
 			} satisfies OmpProcess;
 		},
@@ -189,11 +213,38 @@ describe("start and deliver", () => {
 		expect(byType("prompt")).toMatchObject({ message: "hello", streamingBehavior: "followUp" });
 	});
 
-	test("abort reaches omp", async () => {
+	test("stop sends abort_and_restore_queue and falls back to abort when the runtime rejects it", async () => {
 		const m = make();
 		const summary = await startOk(m);
 		expect((await m.deliver(summary.id, { type: "abort", clientId: "a1" })).status).toBe("ok");
-		expect(log().filter((c) => c.type === "abort")).toHaveLength(1);
+		// The fake, like an older omp, answers abort_and_restore_queue with an unknown-command failure.
+		const types = log().map((c) => c.type);
+		expect(types.filter((t) => t === "abort_and_restore_queue" || t === "abort")).toEqual(["abort_and_restore_queue", "abort"]);
+	});
+
+	test("withdrawn queued messages come back as one notice and are not re-queued", async () => {
+		canned.abort_and_restore_queue = {
+			ok: true,
+			data: { steering: [{ text: "Use the existing parser" }], followUp: [{ text: "Then run\nthe tests" }] },
+		};
+		const m = make();
+		const summary = await startOk(m);
+		expect((await m.deliver(summary.id, { type: "abort", clientId: "a1" })).status).toBe("ok");
+		expect(sent.filter((c) => c.type === "abort")).toHaveLength(0);
+		expect(sent.filter((c) => c.type === "prompt" || c.type === "steer")).toHaveLength(0);
+		const notices = m.snapshot(summary.id)!.items.filter((i) => i.kind === "notice");
+		expect(notices).toHaveLength(1);
+		expect(notices[0]!.text).not.toContain("\n");
+		expect(notices[0]!.text).toContain("Use the existing parser");
+		expect(notices[0]!.text).toContain("Then run the tests");
+	});
+
+	test("an empty withdrawal adds no notice", async () => {
+		canned.abort_and_restore_queue = { ok: true, data: { steering: [], followUp: [] } };
+		const m = make();
+		const summary = await startOk(m);
+		expect((await m.deliver(summary.id, { type: "abort", clientId: "a1" })).status).toBe("ok");
+		expect(m.snapshot(summary.id)!.items).toEqual([]);
 	});
 
 	test("deliver to an unknown session is an error and never throws", async () => {
@@ -363,6 +414,48 @@ describe("events", () => {
 		const notices = m.snapshot(summary.id)!.items.map((i) => i.text);
 		expect(notices).toEqual(["heads up", "omp: boom"]);
 	});
+
+	test("two dialogs opened in sequence are both answerable, oldest first", async () => {
+		const m = make();
+		const summary = await startOk(m);
+		await emitFrames([
+			{ type: "extension_ui_request", id: "d1", method: "select", title: "Pick", options: ["a", "b"] },
+			{ type: "extension_ui_request", id: "d2", method: "confirm", title: "Sure?" },
+		]);
+		await until(() => m.snapshot(summary.id)!.dialog !== null);
+		expect(m.snapshot(summary.id)!.dialog).toMatchObject({ id: "d1" });
+		expect((await m.deliver(summary.id, { type: "answer", clientId: "x0", dialogId: "d2", answer: { kind: "confirm", confirmed: true } })).status).toBe("error");
+
+		expect((await m.deliver(summary.id, { type: "answer", clientId: "x1", dialogId: "d1", answer: { kind: "select", value: "b" } })).status).toBe("ok");
+		const second = m.snapshot(summary.id)!;
+		expect(second.dialog).toMatchObject({ id: "d2", kind: "confirm" });
+		expect(second.status.status).toBe("needs_answer");
+		expect(messages("dialog").at(-1)).toMatchObject({ dialog: { id: "d2" } });
+
+		expect((await m.deliver(summary.id, { type: "answer", clientId: "x2", dialogId: "d2", answer: { kind: "confirm", confirmed: true } })).status).toBe("ok");
+		expect(m.snapshot(summary.id)!.dialog).toBeNull();
+		expect(m.snapshot(summary.id)!.status.status).toBe("idle");
+		await until(() => log().filter((c) => c.type === "extension_ui_response").length === 2);
+		expect(log().filter((c) => c.type === "extension_ui_response")).toEqual([
+			{ type: "extension_ui_response", id: "d1", value: "b" },
+			{ type: "extension_ui_response", id: "d2", confirmed: true },
+		]);
+	});
+
+	test("cancelling a waiting dialog drops it without touching the open one; cancelling the open one promotes the next", async () => {
+		const m = make();
+		const summary = await startOk(m);
+		await emitFrames([
+			{ type: "extension_ui_request", id: "d1", method: "input", title: "One" },
+			{ type: "extension_ui_request", id: "d2", method: "input", title: "Two" },
+			{ type: "extension_ui_request", id: "d3", method: "input", title: "Three" },
+			{ type: "extension_ui_request", id: "c1", method: "cancel", targetId: "d2" },
+			{ type: "extension_ui_request", id: "c2", method: "cancel", targetId: "d1" },
+		]);
+		expect(m.snapshot(summary.id)!.dialog).toMatchObject({ id: "d3" });
+		expect(m.snapshot(summary.id)!.status.status).toBe("needs_answer");
+		expect(messages("dialog").map((d) => (d.type === "dialog" ? (d.dialog?.id ?? null) : undefined))).toEqual(["d1", "d3"]);
+	});
 });
 
 describe("resume", () => {
@@ -487,6 +580,81 @@ describe("lifecycle", () => {
 		const m = make(["--crash-after-ready"]);
 		const res = await m.start({ repoPath: repo });
 		expect(res.ok).toBe(false);
+		expect(m.runningIds()).toEqual([]);
+	});
+
+	test("resume while the session is stopping spawns a fresh process instead of returning the dying one", async () => {
+		const file = sessionFile("sess-3");
+		const m = make(["--session-id", "sess-3"]);
+		const first = await startOk(m, { repoPath: repo, sessionFile: file });
+		const gate = Promise.withResolvers<void>();
+		closeGate = gate.promise;
+		try {
+			const stopping = m.stop(first.id, "handoff");
+			expect(m.snapshot(first.id)).toBeNull();
+			expect(await m.deliver(first.id, { type: "prompt", clientId: "p1", text: "hi" })).toEqual({
+				status: "error",
+				error: "session_not_found",
+			});
+			const resumed = m.start({ repoPath: repo, sessionFile: file });
+			gate.resolve();
+			closeGate = null;
+			const res = await resumed;
+			expect(await stopping).toEqual({ ok: true, value: null });
+			expect(res).toMatchObject({ ok: true, value: { id: "sess-3", running: true } });
+			expect(spawnCalls).toBe(2);
+			expect(alive(procs[0]!.pid)).toBe(false);
+			expect(procs[1]!.exited).toBe(false);
+			expect(m.runningIds()).toEqual(["sess-3"]);
+			expect(m.snapshot("sess-3")).not.toBeNull();
+		} finally {
+			gate.resolve();
+		}
+	});
+
+	test("two concurrent resumes of one session file spawn one process and share the result", async () => {
+		const file = sessionFile("sess-4");
+		const m = make(["--session-id", "sess-4"]);
+		const [a, b] = await Promise.all([
+			m.start({ repoPath: repo, sessionFile: file }),
+			m.start({ repoPath: repo, sessionFile: file }),
+		]);
+		expect(spawnCalls).toBe(1);
+		expect(a).toMatchObject({ ok: true, value: { id: "sess-4", running: true } });
+		expect(b).toEqual(a);
+		expect(m.runningIds()).toEqual(["sess-4"]);
+	});
+
+	test("a writer that appears during spawn wins: the new process is closed with open_at_laptop", async () => {
+		const file = sessionFile("sess-5");
+		grabAfterSpawn = file;
+		const m = make(["--session-id", "sess-5"]);
+		const res = await m.start({ repoPath: repo, sessionFile: file });
+		expect(res).toMatchObject({ ok: false, error: { code: "open_at_laptop" } });
+		expect(spawnCalls).toBe(1);
+		expect(alive(procs[0]!.pid)).toBe(false);
+		expect(m.runningIds()).toEqual([]);
+	});
+
+	test("a setup that never answers is killed at the deadline and returns setup_failed", async () => {
+		hangCommand = "set_subagent_subscription";
+		setupTimeoutMs = 300;
+		const m = make();
+		const res = await m.start({ repoPath: repo });
+		expect(res).toMatchObject({ ok: false, error: { code: "setup_failed" } });
+		expect(spawnCalls).toBe(1);
+		expect(alive(procs[0]!.pid)).toBe(false);
+		expect(m.runningIds()).toEqual([]);
+	});
+
+	test("shutdown during setup closes the process and the start fails with shutting_down", async () => {
+		hangCommand = "set_subagent_subscription";
+		const m = make();
+		const starting = m.start({ repoPath: repo });
+		await until(() => sent.some((c) => c.type === "set_subagent_subscription"));
+		await m.shutdown();
+		expect(alive(procs[0]!.pid)).toBe(false);
+		expect(await starting).toMatchObject({ ok: false, error: { code: "shutting_down" } });
 		expect(m.runningIds()).toEqual([]);
 	});
 });

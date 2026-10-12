@@ -20,6 +20,9 @@ export function createWakeServer(config: BurrowConfig, runRemote: (action: Remot
 	return Bun.serve({
 		hostname: "127.0.0.1",
 		port: config.wakePort,
+		// remote.sh can take longer than Bun's default 10 s idle timeout (starting
+		// services, waiting for them), which would drop the answer mid-run.
+		idleTimeout: 0,
 		async fetch(req) {
 			const denial = authorizeRequest(req, config);
 			if (denial !== null) return denialResponse(denial);

@@ -47,8 +47,21 @@ describe("authorizeRequest origin", () => {
 			"forbidden_origin",
 		);
 	});
-	test("origin is not checked unless required", () => {
+	test("origin is not checked on GET unless required", () => {
 		expect(authorizeRequest(req(login), config)).toBeNull();
+	});
+	test("state-changing methods need the Burrow Origin or trusted fetch metadata", () => {
+		const post = (headers: Record<string, string>, method = "POST") =>
+			authorizeRequest(new Request("http://127.0.0.1:7470/", { method, headers: { ...login, ...headers } }), config);
+		for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+			expect(post({}, method)?.code).toBe("forbidden_origin");
+			expect(post({ Origin: "https://evil.example.com" }, method)?.code).toBe("forbidden_origin");
+			expect(post({ Origin: config.origin }, method)).toBeNull();
+		}
+		expect(post({ "Sec-Fetch-Site": "same-origin" })).toBeNull();
+		expect(post({ "Sec-Fetch-Site": "none" })).toBeNull();
+		expect(post({ "Sec-Fetch-Site": "cross-site" })?.code).toBe("forbidden_origin");
+		expect(post({ Origin: "null", "Sec-Fetch-Site": "same-origin" })?.code).toBe("forbidden_origin");
 	});
 });
 

@@ -13,16 +13,21 @@ export interface ConnectionOptions {
 	url: string;
 	onMessage: (message: ServerMessage) => void;
 	onState: (state: ConnectionState) => void;
+	/** Every ack, so the caller can restore a draft when a message is rejected. */
+	onAck?: (ack: { clientId: string; status: "ok" | "duplicate" | "error"; error?: string }) => void;
 }
 
 export interface Connection {
-	send(message: OutgoingMessage): void;
+	/** Queues the message and returns the client id it was sent with. */
+	send(message: OutgoingMessage): string;
 	close(): void;
 	/** Messages sent but not yet acked. */
 	pendingCount(): number;
 }
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 10000];
+/** A dropout with many typed messages must not grow the queue without bound. */
+const MAX_PENDING = 50;
 
 export function createConnection(options: ConnectionOptions): Connection {
 	let socket: WebSocket | null = null;
@@ -50,7 +55,10 @@ export function createConnection(options: ConnectionOptions): Connection {
 			} catch {
 				return;
 			}
-			if (message.type === "ack") pending = pending.filter((item) => item.clientId !== message.clientId);
+			if (message.type === "ack") {
+				pending = pending.filter((item) => item.clientId !== message.clientId);
+				options.onAck?.({ clientId: message.clientId, status: message.status, error: message.error });
+			}
 			options.onMessage(message);
 		};
 		// A failed connect fires error then close; reconnecting from close alone
@@ -71,12 +79,28 @@ export function createConnection(options: ConnectionOptions): Connection {
 
 	open();
 
+	function retryNow(): void {
+		if (closed || socket !== null) return;
+		clearTimeout(timer ?? undefined);
+		timer = null;
+		attempt = 0;
+		open();
+	}
+	if (typeof window !== "undefined") {
+		window.addEventListener("online", retryNow);
+		window.addEventListener("visibilitychange", () => {
+			if (document.visibilityState === "visible") retryNow();
+		});
+	}
+
 	return {
 		send(message) {
-			if (closed) return;
 			const full = { ...message, clientId: crypto.randomUUID() } as ClientMessage;
+			if (closed) return full.clientId;
 			pending.push(full);
+			if (pending.length > MAX_PENDING) pending = pending.slice(pending.length - MAX_PENDING);
 			if (socket !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(full));
+			return full.clientId;
 		},
 		close() {
 			closed = true;

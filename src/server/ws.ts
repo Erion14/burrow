@@ -11,6 +11,16 @@ import type { SessionManagerPort } from "./sessions/port";
 
 export const FLUSH_INTERVAL_MS = 100;
 
+/**
+ * A socket with more than this many bytes waiting to go out belongs to a phone
+ * that stopped reading. Bun keeps buffering up to its own 16 MB limit and then
+ * drops every send without closing, so the hub gives up well before that.
+ */
+export const SEND_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/** 1013 "try again later": the phone reconnects and the attach sends a fresh snapshot. */
+const STALLED_CLOSE_CODE = 1013;
+
 export interface HubOptions {
 	manager: SessionManagerPort;
 	origin: string;
@@ -42,20 +52,31 @@ export interface Hub {
 	readonly websocket: WebSocketHandler<SocketData>;
 }
 
-const CLIENT_TYPES = new Set(["prompt", "abort", "answer", "discard_dialog", "stop_session"]);
+const CLIENT_TYPES: Record<string, true> = {
+	prompt: true,
+	abort: true,
+	answer: true,
+	discard_dialog: true,
+	stop_session: true,
+};
 
-function parseClientMessage(raw: string | Buffer): ClientMessage | null {
+/** A rejected message still names its clientId when it had one, so it can be acked. */
+type ParsedClientMessage = { ok: true; message: ClientMessage } | { ok: false; clientId: string | null };
+
+function parseClientMessage(raw: string | Buffer): ParsedClientMessage {
 	let value: unknown;
 	try {
 		value = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
 	} catch {
-		return null;
+		return { ok: false, clientId: null };
 	}
-	if (typeof value !== "object" || value === null) return null;
+	if (typeof value !== "object" || value === null) return { ok: false, clientId: null };
 	const record = value as Record<string, unknown>;
-	if (typeof record.type !== "string" || !CLIENT_TYPES.has(record.type)) return null;
-	if (typeof record.clientId !== "string" || record.clientId.length === 0) return null;
-	return value as ClientMessage;
+	const clientId = typeof record.clientId === "string" && record.clientId.length > 0 ? record.clientId : null;
+	if (clientId === null || typeof record.type !== "string" || !Object.hasOwn(CLIENT_TYPES, record.type)) {
+		return { ok: false, clientId };
+	}
+	return { ok: true, message: value as ClientMessage };
 }
 
 export function createHub(options: HubOptions): Hub {
@@ -63,24 +84,49 @@ export function createHub(options: HubOptions): Hub {
 	const authConfig = { ownerLogin: options.ownerLogin, origin: options.origin } as BurrowConfig;
 	const sockets = new Set<ServerWebSocket<SocketData>>();
 	let closed = false;
+	/** Bumped whenever list sockets are sent a `sessions` message. */
+	let listEpoch = 0;
+
+	function forget(ws: ServerWebSocket<SocketData>): void {
+		sockets.delete(ws);
+		clearTimeout(ws.data.timer);
+		ws.data.timer = undefined;
+		ws.data.queue.length = 0;
+	}
+
+	/**
+	 * Sends one payload; false when the socket is gone or was just closed as
+	 * stalled. A dropped send (0) or a runaway buffer means the phone already
+	 * missed or will miss messages, so the socket is closed instead of letting
+	 * the transcript grow holes.
+	 */
+	function send(ws: ServerWebSocket<SocketData>, payload: string): boolean {
+		if (!sockets.has(ws)) return false;
+		const result = ws.send(payload);
+		if (result !== 0 && ws.getBufferedAmount() <= SEND_BUFFER_LIMIT_BYTES) return true;
+		forget(ws);
+		ws.close(STALLED_CLOSE_CODE, "phone fell behind; reconnect for a fresh snapshot");
+		return false;
+	}
 
 	function flush(ws: ServerWebSocket<SocketData>): void {
 		const data = ws.data;
 		clearTimeout(data.timer);
 		data.timer = undefined;
 		const queue = data.queue.splice(0);
-		for (const message of queue) ws.send(JSON.stringify(message));
+		for (const message of queue) if (!send(ws, JSON.stringify(message))) return;
 	}
 
 	/** Queues a session message; adjacent-by-kind deltas for one item coalesce. */
 	function enqueue(ws: ServerWebSocket<SocketData>, message: ServerMessage): void {
+		if (!sockets.has(ws)) return;
 		const data = ws.data;
 		if (message.type === "snapshot") {
 			// A snapshot replaces whatever was pending.
 			data.queue.length = 0;
 			clearTimeout(data.timer);
 			data.timer = undefined;
-			ws.send(JSON.stringify(message));
+			send(ws, JSON.stringify(message));
 			return;
 		}
 		if (message.type === "delta") {
@@ -102,10 +148,30 @@ export function createHub(options: HubOptions): Hub {
 		if (data.timer === undefined) data.timer = setTimeout(() => flush(ws), FLUSH_INTERVAL_MS);
 	}
 
+	async function sessionsPayload(): Promise<string> {
+		const [sessions, repos] = await Promise.all([manager.list(), listRepos(options.repos ?? [])]);
+		return JSON.stringify({ type: "sessions", sessions, repos } satisfies ServerMessage);
+	}
+
+	/** Gives a list socket the current list, so a reconnect never shows a stale one. */
+	async function sendListOnAttach(ws: ServerWebSocket<SocketData>): Promise<void> {
+		const epoch = listEpoch;
+		let payload: string;
+		try {
+			payload = await sessionsPayload();
+		} catch {
+			// The next broadcast reaches this socket anyway.
+			return;
+		}
+		// A broadcast that went out meanwhile already reached this socket and may be newer.
+		if (epoch === listEpoch && ws.data.sessionId === null) send(ws, payload);
+	}
+
 	const unsubscribe = manager.subscribe((sessionId, message) => {
-		for (const ws of sockets) {
+		if (sessionId === null && message.type === "sessions") listEpoch++;
+		for (const ws of [...sockets]) {
 			if (sessionId === null) {
-				if (ws.data.sessionId === null) ws.send(JSON.stringify(message));
+				if (ws.data.sessionId === null) send(ws, JSON.stringify(message));
 			} else if (ws.data.sessionId === sessionId) {
 				enqueue(ws, message);
 			}
@@ -113,16 +179,20 @@ export function createHub(options: HubOptions): Hub {
 	});
 
 	async function handleClientMessage(ws: ServerWebSocket<SocketData>, raw: string | Buffer): Promise<void> {
-		const message = parseClientMessage(raw);
-		if (message === null) {
-			enqueue(ws, { type: "error", code: "bad_message", message: "expected a JSON message with a type and clientId" });
-			return;
-		}
+		const parsed = parseClientMessage(raw);
 		const sessionId = ws.data.sessionId;
-		if (sessionId === null) {
-			enqueue(ws, { type: "error", code: "no_session", message: "this socket is not attached to a session" });
+		// A message that cannot be applied is still acked when it has an id, so the
+		// phone drops it from its resend queue; the id is never recorded as applied.
+		if (!parsed.ok || sessionId === null) {
+			const clientId = parsed.ok ? parsed.message.clientId : parsed.clientId;
+			const [code, text] = parsed.ok
+				? (["no_session", "this socket is not attached to a session"] as const)
+				: (["bad_message", "expected a JSON message with a known type and a clientId"] as const);
+			if (clientId === null) enqueue(ws, { type: "error", code, message: text });
+			else enqueue(ws, { type: "ack", clientId, status: "error", error: text });
 			return;
 		}
+		const message = parsed.message;
 		if (ws.data.applied.has(message.clientId)) {
 			enqueue(ws, { type: "ack", clientId: message.clientId, status: "duplicate" });
 			return;
@@ -132,12 +202,12 @@ export function createHub(options: HubOptions): Hub {
 			const delivery = await manager.deliver(sessionId, message);
 			const ack: ServerMessage = { type: "ack", clientId: message.clientId, status: delivery.status };
 			if (delivery.error !== undefined) ack.error = delivery.error;
-			if (!closed) enqueue(ws, ack);
+			enqueue(ws, ack);
 		} catch (err) {
 			// Forget the id so the phone can resend after a failed attempt.
 			ws.data.applied.delete(message.clientId);
 			const text = err instanceof Error ? err.message : String(err);
-			if (!closed) enqueue(ws, { type: "ack", clientId: message.clientId, status: "error", error: text });
+			enqueue(ws, { type: "ack", clientId: message.clientId, status: "error", error: text });
 		}
 	}
 
@@ -149,24 +219,25 @@ export function createHub(options: HubOptions): Hub {
 			}
 			sockets.add(ws);
 			const sessionId = ws.data.sessionId;
-			if (sessionId === null) return;
+			if (sessionId === null) {
+				void sendListOnAttach(ws);
+				return;
+			}
 			const snapshot = manager.snapshot(sessionId);
 			if (snapshot === null) {
 				// Keep the socket open; it behaves as a list socket from here on.
 				ws.data.sessionId = null;
-				enqueue(ws, { type: "error", code: "session_not_found", message: `Unknown session: ${sessionId}` });
+				const error: ServerMessage = { type: "error", code: "session_not_found", message: `Unknown session: ${sessionId}` };
+				if (send(ws, JSON.stringify(error))) void sendListOnAttach(ws);
 				return;
 			}
-			ws.send(JSON.stringify({ type: "snapshot", snapshot } satisfies ServerMessage));
+			send(ws, JSON.stringify({ type: "snapshot", snapshot } satisfies ServerMessage));
 		},
 		message(ws, raw) {
 			void handleClientMessage(ws, raw);
 		},
 		close(ws) {
-			sockets.delete(ws);
-			clearTimeout(ws.data.timer);
-			ws.data.timer = undefined;
-			ws.data.queue.length = 0;
+			forget(ws);
 		},
 	};
 
@@ -195,18 +266,16 @@ export function createHub(options: HubOptions): Hub {
 			return sockets.size;
 		},
 		async broadcastList() {
-			const listSockets = [...sockets].filter((ws) => ws.data.sessionId === null);
-			if (listSockets.length === 0) return;
-			const [sessions, repos] = await Promise.all([manager.list(), listRepos(options.repos ?? [])]);
-			const payload = JSON.stringify({ type: "sessions", sessions, repos } satisfies ServerMessage);
-			for (const ws of listSockets) if (sockets.has(ws)) ws.send(payload);
+			if (![...sockets].some((ws) => ws.data.sessionId === null)) return;
+			const payload = await sessionsPayload();
+			listEpoch++;
+			for (const ws of [...sockets]) if (ws.data.sessionId === null) send(ws, payload);
 		},
 		close() {
 			closed = true;
 			unsubscribe();
 			for (const ws of [...sockets]) {
-				clearTimeout(ws.data.timer);
-				ws.data.timer = undefined;
+				forget(ws);
 				ws.close(1001, "server shutting down");
 			}
 			sockets.clear();

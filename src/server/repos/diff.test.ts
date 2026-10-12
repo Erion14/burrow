@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitDiff } from "./diff";
@@ -100,12 +100,135 @@ test("a merge conflict is reported as conflict", async () => {
 	expect(byPath((await gitDiff(repo)).files, "mod.txt")?.status).toBe("conflict");
 });
 
-test("a missing directory throws; a non repo throws with git stderr", async () => {
+test("a missing directory throws; a plain repo has no notice", async () => {
 	await expect(gitDiff(join(repo, "nope"))).rejects.toThrow(/does not exist/);
-	const plain = await realpath(await mkdtemp(join(tmpdir(), "burrow-nogit-")));
-	try {
-		await expect(gitDiff(plain)).rejects.toThrow(/not a git repository/);
-	} finally {
-		await rm(plain, { recursive: true, force: true });
+	expect("notice" in (await gitDiff(repo))).toBe(false);
+});
+
+describe("bounds", () => {
+	async function untracked(count: number, dir = "out"): Promise<void> {
+		await mkdir(join(repo, dir), { recursive: true });
+		await Promise.all(Array.from({ length: count }, (_, i) => writeFile(join(repo, dir, `f${String(i).padStart(4, "0")}.txt`), `${i}\n`)));
 	}
+
+	test("a repo with many untracked files stops at the deadline and reports truncation", async () => {
+		await untracked(800);
+		const started = performance.now();
+		const res = await gitDiff(repo, { deadlineMs: 150, maxUntrackedFiles: 10_000 });
+		const elapsed = performance.now() - started;
+		expect(elapsed).toBeLessThan(1500);
+		expect(res.truncated).toBe(true);
+		expect(res.notice).toMatch(/stopped after/);
+		expect(res.files.length).toBeLessThan(800);
+	});
+
+	test("only the first untracked files are rendered past the count cap", async () => {
+		await untracked(30);
+		const res = await gitDiff(repo, { maxUntrackedFiles: 10 });
+		const shown = res.files.filter((f) => f.status === "untracked");
+		expect(shown.map((f) => f.path)).toEqual(Array.from({ length: 10 }, (_, i) => `out/f${String(i).padStart(4, "0")}.txt`));
+		for (const f of shown) expect(f.additions).toBe(1);
+		expect(res.truncated).toBe(true);
+		expect(res.notice).toContain("10 of 30 untracked files");
+	});
+
+	test("untracked files over the size cap are skipped with a notice", async () => {
+		await writeFile(join(repo, "huge.log"), "x\n".repeat(5000));
+		await writeFile(join(repo, "small.txt"), "s\n");
+		const res = await gitDiff(repo, { maxUntrackedFileBytes: 1000 });
+		expect(byPath(res.files, "huge.log")).toBeUndefined();
+		expect(byPath(res.files, "small.txt")).toMatchObject({ status: "untracked", additions: 1 });
+		expect(res.notice).toContain("huge.log");
+	});
+
+	test("git output past the cap is cut and reported as truncated", async () => {
+		await writeFile(join(repo, "mod.txt"), `${Array.from({ length: 2000 }, (_, i) => `changed ${i}`).join("\n")}\n`);
+		const res = await gitDiff(repo, { maxOutputBytes: 2000 });
+		expect(res.truncated).toBe(true);
+		const mod = byPath(res.files, "mod.txt");
+		expect(mod?.status).toBe("modified");
+		expect(mod?.additions).toBeLessThan(2000);
+		expect(res.notice).toMatch(/output/);
+	});
+
+	test("a workspace child's notes carry the child name", async () => {
+		const ws = await realpath(await mkdtemp(join(tmpdir(), "burrow-ws-")));
+		try {
+			await makeRepo(join(ws, "one"), { "a.txt": "base\nz\n" });
+			await writeFile(join(ws, "one", "huge.log"), "x\n".repeat(5000));
+			const res = await gitDiff(ws, { maxUntrackedFileBytes: 1000 });
+			expect(res.files.map((f) => f.path)).toEqual(["one/a.txt"]);
+			expect(res.notice).toContain("one: ");
+			expect(res.notice).toContain("huge.log");
+		} finally {
+			await rm(ws, { recursive: true, force: true });
+		}
+	});
+});
+
+async function makeRepo(dir: string, files: Record<string, string>): Promise<void> {
+	await mkdir(dir, { recursive: true });
+	const run = async (...args: string[]) => {
+		const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+		if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")}: ${await new Response(p.stderr).text()}`);
+	};
+	await run("init", "-q", "-b", "main");
+	await run("config", "user.email", "t@example.com");
+	await run("config", "user.name", "T");
+	await run("config", "commit.gpgsign", "false");
+	for (const name of Object.keys(files)) await writeFile(join(dir, name), "base\n");
+	await run("add", ".");
+	await run("commit", "-q", "-m", "init");
+	for (const [name, content] of Object.entries(files)) await writeFile(join(dir, name), content);
+}
+
+describe("workspace directory", () => {
+	let ws: string;
+	beforeEach(async () => {
+		ws = await realpath(await mkdtemp(join(tmpdir(), "burrow-ws-")));
+	});
+	afterEach(() => rm(ws, { recursive: true, force: true }));
+
+	test("merges child repos with prefixed paths, ordered, ignoring nested and hidden ones", async () => {
+		await makeRepo(join(ws, "zeta"), { "a.txt": "base\nz\n" });
+		await makeRepo(join(ws, "alpha"), { "b.txt": "base\nx\n", "a.txt": "base\ny\n" });
+		await makeRepo(join(ws, "deep", "inner"), { "n.txt": "base\nn\n" });
+		await makeRepo(join(ws, ".hidden"), { "h.txt": "base\nh\n" });
+		await mkdir(join(ws, "vault"));
+		await writeFile(join(ws, "vault", "note.md"), "hi\n");
+		const res = await gitDiff(ws);
+		expect(res.files.map((f) => f.path)).toEqual(["alpha/a.txt", "alpha/b.txt", "zeta/a.txt"]);
+		expect(byPath(res.files, "zeta/a.txt")).toMatchObject({ additions: 1, deletions: 0, status: "modified" });
+		expect(res.truncated).toBe(false);
+		expect(res.notice).toBe("not a git repository; showing 2 git repositories below");
+	});
+
+	test("no repositories gives an empty list and a notice", async () => {
+		await mkdir(join(ws, "vault"));
+		const res = await gitDiff(ws);
+		expect(res.files).toEqual([]);
+		expect(res.truncated).toBe(false);
+		expect(res.notice).toMatch(/no git repositories/);
+	});
+
+	test("the response cap applies across children", async () => {
+		const big = `base\n${"x".repeat(100)}\n`.repeat(50);
+		await makeRepo(join(ws, "one"), { "f.txt": big });
+		await makeRepo(join(ws, "two"), { "f.txt": big });
+		const res = await gitDiff(ws, { maxBytes: 3000 });
+		expect(res.truncated).toBe(true);
+		const total = res.files.reduce((n, f) => n + new TextEncoder().encode(f.unified).length, 0);
+		expect(total).toBeLessThanOrEqual(3000);
+		expect(res.files.map((f) => f.path)).toEqual(["one/f.txt", "two/f.txt"]);
+	});
+
+	test("a child with a broken git adds a notice line instead of failing", async () => {
+		await makeRepo(join(ws, "good"), { "a.txt": "base\nz\n" });
+		await mkdir(join(ws, "broken"));
+		await writeFile(join(ws, "broken", ".git"), "gitdir: /nonexistent/nowhere\n");
+		const res = await gitDiff(ws);
+		expect(res.files.map((f) => f.path)).toEqual(["good/a.txt"]);
+		expect(res.notice).toContain("showing 1 git repository below");
+		expect(res.notice).toContain("broken:");
+	});
 });

@@ -165,6 +165,11 @@ export function createHttpServer(options: HttpServerOptions): Server<SocketData>
 	return Bun.serve<SocketData>({
 		port: config.port,
 		hostname: "127.0.0.1",
+		// Bun's default 10 s idle timeout drops a request whose response is still
+		// being computed (a resume waits on spawn, handshake and paging; a big diff
+		// takes a while) and the phone sees a dropped socket while the work goes on.
+		// Only the loopback proxy connects, so an unbounded wait costs nothing.
+		idleTimeout: 0,
 		websocket: hub.websocket,
 		async fetch(req, server) {
 			try {
