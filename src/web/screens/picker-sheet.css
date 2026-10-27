@@ -1,0 +1,200 @@
+/* A bottom sheet over a dim backdrop, one shape for every picker. It reads the
+   theme variables from styles.css and styles nothing outside .picker-backdrop
+   and .picker-sheet. */
+
+.picker-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 8;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	background: color-mix(in srgb, var(--page-bg) 78%, transparent);
+	/* A drag on the backdrop must not scroll the transcript behind the sheet. */
+	touch-action: none;
+	overscroll-behavior: contain;
+}
+
+.picker-sheet {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	/* About 70 percent of the viewport leaves the transcript visible above, so a
+	   picker reads as a sheet rather than another screen. */
+	max-height: 70dvh;
+	max-width: 720px;
+	padding: 0 calc(6px + var(--safe-right)) var(--safe-bottom) calc(6px + var(--safe-left));
+	border-top: 1px solid var(--border);
+	border-radius: 10px 10px 0 0;
+	background: var(--card-bg);
+	color: var(--text);
+	box-shadow: 0 -8px 24px color-mix(in srgb, var(--canopy-black) 60%, transparent);
+	animation: picker-rise 140ms ease-out;
+}
+
+@keyframes picker-rise {
+	from {
+		transform: translateY(12px);
+	}
+	to {
+		transform: translateY(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.picker-sheet {
+		animation: none;
+	}
+}
+
+.picker-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 4px 6px 10px;
+	border-bottom: 1px solid var(--border-muted);
+}
+
+.picker-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: 13.5px;
+	font-weight: 700;
+	color: var(--muted);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.picker-close {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	/* A finger needs 40 square, and the glyph alone would be 12. */
+	width: 40px;
+	height: 40px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.picker-close:active {
+	background: var(--selected-bg);
+}
+
+.picker-search {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 0.6ch;
+	padding: 0 10px;
+	border-bottom: 1px solid var(--border-muted);
+	color: var(--dim);
+}
+
+.picker-input {
+	flex: 1;
+	min-width: 0;
+	min-height: 40px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	font-size: 14px;
+}
+
+.picker-input:focus {
+	/* A ring inside a ring reads as a mistake on a phone width: the search row
+	   itself lights up on focus instead. */
+	outline: none;
+}
+
+.picker-search:focus-within {
+	background: var(--selected-bg);
+	color: var(--accent);
+}
+
+.picker-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	touch-action: pan-y;
+}
+
+.picker-group {
+	margin: 0;
+	padding: 8px 10px 2px;
+	color: var(--dim);
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.picker-row {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6ch;
+	width: 100%;
+	min-height: 40px;
+	padding: 8px 10px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	font-size: 13.5px;
+	text-align: left;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.picker-row:active {
+	background: var(--selected-bg);
+}
+
+.picker-row.is-active {
+	color: var(--accent);
+}
+
+/* The check keeps its column whether or not the row is the current one, so the
+   labels of a group stay in line. */
+.picker-check {
+	flex: none;
+	width: 1.4ch;
+	text-align: center;
+	visibility: hidden;
+}
+
+.picker-row.is-active .picker-check {
+	visibility: visible;
+}
+
+.picker-label {
+	flex: 0 1 auto;
+}
+
+.picker-detail {
+	flex: 1 1 auto;
+	min-width: 0;
+	color: var(--dim);
+	font-size: 11.5px;
+	text-align: right;
+}
+
+.picker-empty {
+	margin: 0;
+	/* The sheet already carries the safe area bottom padding. */
+	padding: 18px 10px;
+	color: var(--dim);
+	font-size: 13px;
+	text-align: center;
+}

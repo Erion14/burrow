@@ -22,7 +22,14 @@ phone (PWA) --HTTPS/WSS over tailnet--> tailscale serve
 
 | Sessions | Chat | Dialog | Diff |
 | --- | --- | --- | --- |
-| <img src="docs/screenshots/sessions.png" width="220" alt="Sessions grouped by workspace, with a selector for all, api or web"> | <img src="docs/screenshots/chat.png" width="220" alt="A turn with an assistant reply, a collapsed tool card and a queued message"> | <img src="docs/screenshots/dialog.png" width="220" alt="An agent question with numbered options and a cancel button"> | <img src="docs/screenshots/diff.png" width="220" alt="A read only diff with per file headers, hunks and added and removed lines"> |
+| <img src="docs/screenshots/sessions.png" width="220" alt="Sessions grouped by workspace, with a search box, status counts and a selector for all, api or web"> | <img src="docs/screenshots/chat.png" width="220" alt="A turn over omp's status line and key bar: tool cards, a subagent, a queued message and a pending dialog"> | <img src="docs/screenshots/dialog.png" width="220" alt="An agent question with numbered options, a detail line each, and a cancel button"> | <img src="docs/screenshots/diff.png" width="220" alt="A read only diff with per file headers, hunks, added and removed lines, folding and a jump list"> |
+
+The composer carries omp's key bar, `@` file and `/` command completion, and the
+model, thinking and goal pickers:
+
+| Model selector | File references | Commands |
+| --- | --- | --- |
+| <img src="docs/screenshots/model.png" width="220" alt="The model picker, grouped by provider, with the active model marked and a filter box"> | <img src="docs/screenshots/files.png" width="220" alt="Typing an at sign opens the file menu for the session's repo, with an icon per file type"> | <img src="docs/screenshots/commands.png" width="220" alt="Typing a slash opens omp's command list with descriptions"> |
 
 Captured from the phone viewport against a scratch repo and the scripted omp in
 `test/fake-omp.ts`, so the data is made up.
@@ -36,6 +43,16 @@ Captured from the phone viewport against a scratch repo and the scripted omp in
   queued messages, and dialogs rendered for every kind omp asks: `select`,
   `confirm`, `input`, `editor` and `ask` (buttons, plus free text where omp
   allows it).
+- **Composer.** omp's key bar with sticky `Ctrl`, `Alt` and `Shift` chords
+  (`Ctrl+C` stops the turn, `Ctrl+P` opens the model picker, `Shift+Tab` cycles
+  the thinking level), `@` file references and `/` commands resolved from the
+  session's repo and from omp, a `!command` shell mode, and one draft per
+  session kept on the device. The status line carries the model, thinking
+  level, context usage, todos and goal straight from omp's `get_state`, and
+  long pressing a message copies it.
+- **Look.** Burrow ships its own font (a JetBrains Mono Nerd Font Mono subset)
+  and one symbol table in omp's `nerd` preset, so the phone draws the same
+  glyphs as the terminal, tool icons included.
 - **Diff.** Read only `git diff HEAD` plus untracked files per repo. A directory
   holding several git repos diffs each one below it, so a workspace like `~/code`
   works. Bounded so a large untracked tree cannot stall it.

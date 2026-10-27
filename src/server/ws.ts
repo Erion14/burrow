@@ -58,6 +58,21 @@ const CLIENT_TYPES: Record<string, true> = {
 	answer: true,
 	discard_dialog: true,
 	stop_session: true,
+	list_models: true,
+	refresh_state: true,
+	set_model: true,
+	cycle_model: true,
+	set_thinking: true,
+	cycle_thinking: true,
+	compact: true,
+	remove_queued: true,
+	promote_queued: true,
+	restore_queue: true,
+	cancel_subagent: true,
+	steer_subagent: true,
+	rename_session: true,
+	goal_action: true,
+	bash: true,
 };
 
 /** A rejected message still names its clientId when it had one, so it can be acked. */

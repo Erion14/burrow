@@ -9,7 +9,8 @@ import type { DiffResponse } from "../shared/types";
 import { authorizeRequest, denialResponse } from "./auth";
 import type { BurrowConfig } from "./config";
 import { listRepos, resolveRepo } from "./repos/allowlist";
-import type { SessionManagerPort } from "./sessions/port";
+import { createFileIndexer, DEFAULT_LIMIT, MAX_LIMIT, type FileIndexer } from "./repos/files";
+import type { BurrowError, SessionManagerPort } from "./sessions/port";
 import type { Hub, SocketData } from "./ws";
 
 export interface HttpServerOptions {
@@ -18,18 +19,32 @@ export interface HttpServerOptions {
 	hub: Hub;
 	/** Diff of the working tree of a repo; throws with the git stderr text on failure. */
 	diff: (repoPath: string) => Promise<DiffResponse>;
+	/** File index behind GET /api/files; the default caches one index per repo root. */
+	fileIndex?: FileIndexer;
 }
 
-/** Manager error codes that mean the session is held elsewhere; answered 409. */
-const CONFLICT_CODES: ReadonlySet<string> = new Set(["session_conflict", "open_at_laptop"]);
+/** Manager error codes that mean the session is held elsewhere and stays so; answered 409. */
+const CONFLICT_CODES: ReadonlySet<string> = new Set(["session_conflict", "open_elsewhere", "holder_not_omp", "takeover_failed"]);
 
 function errorResponse(status: number, code: string, message: string, headers?: HeadersInit): Response {
 	const body: ApiErrorBody = { error: { code, message } };
 	return Response.json(body, { status, headers });
 }
 
+function managerErrorResponse(error: BurrowError): Response {
+	return errorResponse(CONFLICT_CODES.has(error.code) ? 409 : 400, error.code, error.message);
+}
+
 function errorText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/** null when the raw parameter is present but not a usable row count. */
+function parseLimit(raw: string | null): number | null {
+	if (raw === null) return DEFAULT_LIMIT;
+	if (!/^\d+$/.test(raw)) return null;
+	const limit = Number(raw);
+	return limit >= 1 && limit <= MAX_LIMIT ? limit : null;
 }
 
 async function readJsonObject(req: Request): Promise<Record<string, unknown> | null> {
@@ -74,6 +89,7 @@ async function serveShell(webRoot: string, pathname: string): Promise<Response> 
 
 export function createHttpServer(options: HttpServerOptions): Server<SocketData> {
 	const { config, manager, hub, diff } = options;
+	const fileIndex = options.fileIndex ?? createFileIndexer();
 
 	async function route(req: Request, server: Server<SocketData>): Promise<Response> {
 		const url = new URL(req.url);
@@ -109,6 +125,15 @@ export function createHttpServer(options: HttpServerOptions): Server<SocketData>
 			if (req.method !== "POST") return methodNotAllowed("POST");
 			return startSession(req);
 		}
+		if (path === "/api/sessions/adopt") {
+			return req.method === "POST" ? adoptSession(req) : methodNotAllowed("POST");
+		}
+		if (path === "/api/sessions/watch") {
+			return req.method === "POST" ? watchSession(req) : methodNotAllowed("POST");
+		}
+		if (path === "/api/files") {
+			return req.method === "GET" ? listSessionFiles(url) : methodNotAllowed("GET");
+		}
 		const match = /^\/api\/sessions\/([^/]+)\/(stop|diff)$/.exec(path);
 		if (match !== null) {
 			const sessionId = decodeURIComponent(match[1] ?? "");
@@ -139,11 +164,29 @@ export function createHttpServer(options: HttpServerOptions): Server<SocketData>
 		const started = await manager.start(
 			sessionFile === undefined ? { repoPath: repo.value.path } : { repoPath: repo.value.path, sessionFile },
 		);
-		if (!started.ok) {
-			const status = CONFLICT_CODES.has(started.error.code) ? 409 : 400;
-			return errorResponse(status, started.error.code, started.error.message);
-		}
+		if (!started.ok) return managerErrorResponse(started.error);
 		return Response.json({ session: started.value });
+	}
+
+	async function adoptSession(req: Request): Promise<Response> {
+		const sessionFile = (await readJsonObject(req))?.sessionFile;
+		if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+			return errorResponse(400, "bad_request", "body needs a sessionFile string");
+		}
+		const adopted = await manager.adopt(sessionFile);
+		if (!adopted.ok) return managerErrorResponse(adopted.error);
+		return Response.json({ session: adopted.value });
+	}
+
+	/** Opens a read only view of a session file another process at the host holds. */
+	async function watchSession(req: Request): Promise<Response> {
+		const sessionFile = (await readJsonObject(req))?.sessionFile;
+		if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+			return errorResponse(400, "bad_request", "body needs a sessionFile string");
+		}
+		const watched = await manager.watch(sessionFile);
+		if (!watched.ok) return managerErrorResponse(watched.error);
+		return Response.json({ session: watched.value });
 	}
 
 	async function stopSession(sessionId: string): Promise<Response> {
@@ -160,6 +203,16 @@ export function createHttpServer(options: HttpServerOptions): Server<SocketData>
 		} catch (err) {
 			return errorResponse(500, "diff_failed", errorText(err));
 		}
+	}
+
+	async function listSessionFiles(url: URL): Promise<Response> {
+		const sessionId = url.searchParams.get("session");
+		if (sessionId === null || sessionId.length === 0) return errorResponse(400, "bad_request", "session is required");
+		const limit = parseLimit(url.searchParams.get("limit"));
+		if (limit === null) return errorResponse(400, "bad_request", `limit must be an integer between 1 and ${MAX_LIMIT}`);
+		const snapshot = manager.snapshot(sessionId);
+		if (snapshot === null) return errorResponse(404, "session_not_found", `Unknown session: ${sessionId}`);
+		return Response.json(await fileIndex.list(snapshot.session.repo, url.searchParams.get("q") ?? "", limit));
 	}
 
 	return Bun.serve<SocketData>({

@@ -4,7 +4,7 @@ import type { BurrowConfig } from "../server/config";
 import { createWakeServer } from "./server";
 
 const OWNER = "owner@example.com";
-const config = { ownerLogin: OWNER, origin: "https://laptop.tailnet.ts.net", wakePort: 0 } as BurrowConfig;
+const config = { ownerLogin: OWNER, origin: "https://host.tailnet.ts.net", wakePort: 0 } as BurrowConfig;
 
 let server: Server<undefined> | null = null;
 

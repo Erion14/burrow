@@ -1,47 +1,5 @@
-// Stroke icons drawn with currentColor so every icon takes its colour from a theme variable.
-
-export function BackIcon() {
-	return (
-		<svg viewBox="0 0 24 24" aria-hidden="true">
-			<path d="M15 5l-7 7 7 7" />
-		</svg>
-	);
-}
-
-export function LaptopIcon() {
-	return (
-		<svg viewBox="0 0 24 24" aria-hidden="true">
-			<rect x="4" y="5" width="16" height="11" rx="1.5" />
-			<path d="M2 20h20" />
-		</svg>
-	);
-}
-
-export function RefreshIcon() {
-	return (
-		<svg viewBox="0 0 24 24" aria-hidden="true">
-			<path d="M20 12a8 8 0 1 1-2.34-5.66" />
-			<path d="M20 4v5h-5" />
-		</svg>
-	);
-}
-
-export function PowerIcon() {
-	return (
-		<svg viewBox="0 0 24 24" aria-hidden="true">
-			<path d="M12 3v8" />
-			<path d="M6.3 6.8a8 8 0 1 0 11.4 0" />
-		</svg>
-	);
-}
-
-export function DownIcon() {
-	return (
-		<svg viewBox="0 0 24 24" aria-hidden="true">
-			<path d="M6 9l6 6 6-6" />
-		</svg>
-	);
-}
+// The one drawing that is not a font glyph. Every icon the UI draws is a text node from
+// ../lib/symbols rendered through ./symbol, so this file holds only the app's own mark.
 
 /** The Burrow mark: the same arch as the app icon. */
 export function BurrowMark({ class: className }: { class?: string }) {

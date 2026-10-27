@@ -1,0 +1,90 @@
+/* The plan panel: dense enough to read a whole phase on a phone, and it wraps
+   its task text instead of scrolling sideways. It reads the theme variables from
+   styles.css and styles nothing outside .todos-panel. */
+
+.todos-panel {
+	padding: 4px 10px 8px;
+	font-size: 12.5px;
+}
+
+.todos-phase + .todos-phase {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px solid var(--border-muted);
+}
+
+.todos-phase-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin: 0 0 4px;
+}
+
+.todos-phase-name {
+	flex: 1;
+	min-width: 0;
+	color: var(--muted);
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	font-size: 11px;
+}
+
+.todos-count {
+	flex: none;
+	color: var(--dim);
+	font-variant-numeric: tabular-nums;
+}
+
+.todos-tasks {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.todo {
+	display: flex;
+	align-items: baseline;
+	gap: 0.8ch;
+	padding: 2px 0;
+}
+
+.todo-mark {
+	flex: none;
+	width: 1.4ch;
+	text-align: center;
+}
+
+.todo-pending .todo-mark {
+	color: var(--dim);
+}
+
+.todo-in-progress .todo-mark {
+	color: var(--accent);
+}
+
+.todo-completed .todo-mark {
+	color: var(--success);
+}
+
+.todo-cancelled .todo-mark {
+	color: var(--warning);
+}
+
+.todo-content {
+	flex: 1;
+	min-width: 0;
+	/* A long task line must not push the panel sideways on a phone. */
+	overflow-wrap: anywhere;
+}
+
+.todo-completed .todo-content {
+	color: var(--dim);
+}
+
+.todo-status {
+	flex: none;
+	color: var(--dim);
+	font-size: 11px;
+	white-space: nowrap;
+}

@@ -24,6 +24,15 @@ async function listFiles(dir: string): Promise<string[]> {
 await rm(OUT, { recursive: true, force: true });
 await mkdir(join(OUT, "assets"), { recursive: true });
 
+// The CSS bundler resolves the @font-face urls, so a missing woff2 shows up as
+// an unresolved import. Check first for a clearer failure, and because a build
+// that ships without the font renders every nerd glyph as tofu.
+for (const name of ["burrow-mono-regular.woff2", "burrow-mono-bold.woff2"]) {
+	if (!(await Bun.file(join(SRC, "fonts", name)).exists())) {
+		throw new Error(`font ${name} is missing from ${SRC}/fonts`);
+	}
+}
+
 // Entry names carry a hash so a new deploy never serves stale cache-first assets.
 await run([
 	"bun", "build", `${SRC}/main.tsx`,
@@ -44,11 +53,13 @@ const entry = assets.find((name) => /^main-.*\.js$/.test(name));
 if (entry === undefined) throw new Error("bundle entry main-*.js not found");
 const css = assets.filter((name) => name.endsWith(".css"));
 const chunks = assets.filter((name) => name.endsWith(".js") && name !== entry);
+const fonts = assets.filter((name) => name.endsWith(".woff2"));
 
 let html = await Bun.file(join(SRC, "index.html")).text();
 const head = [
 	...css.map((name) => `<link rel="stylesheet" href="/assets/${name}" />`),
 	...chunks.map((name) => `<link rel="modulepreload" href="/assets/${name}" />`),
+	...fonts.map((name) => `<link rel="preload" as="font" type="font/woff2" href="/assets/${name}" crossorigin />`),
 ].join("\n\t\t");
 if (!html.includes('src="./main.tsx"')) throw new Error("index.html does not reference ./main.tsx");
 html = html.replace('src="./main.tsx"', `src="/assets/${entry}"`).replace("</head>", `\t${head}\n\t</head>`);

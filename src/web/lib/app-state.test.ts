@@ -1,6 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import type { DialogView, SessionSnapshot, SessionSummary, TranscriptItem } from "../../shared/types";
-import { MAX_TRANSCRIPT_ITEMS, applyServerMessage, initialAppState, withConnection } from "./app-state";
+import type {
+	CommandView,
+	DialogView,
+	ModelView,
+	SessionSnapshot,
+	SessionSummary,
+	TranscriptItem,
+} from "../../shared/types";
+import {
+	MAX_TRANSCRIPT_ITEMS,
+	applyServerMessage,
+	initialAppState,
+	openSheet,
+	toggleThinkingVisible,
+	toggleTodos,
+	toggleTools,
+	withConnection,
+	withDraft,
+} from "./app-state";
 
 const session: SessionSummary = {
 	id: "s1",
@@ -9,7 +26,8 @@ const session: SessionSummary = {
 	title: "t",
 	status: "idle",
 	running: true,
-	openAtLaptop: false,
+	openElsewhere: false,
+	canTakeOver: false,
 	sessionFile: null,
 	updatedAt: "2026-10-12T00:00:00Z",
 };
@@ -25,9 +43,11 @@ function snapshot(items: TranscriptItem[], dlg: DialogView | null = null): Sessi
 		session,
 		items,
 		dialog: dlg,
+		readOnly: false,
 		subagents: [],
 		queued: { steering: [], followUp: [] },
 		status: { status: "idle", isSettled: true, hasPendingAsyncWork: false },
+		commands: [],
 		truncated: false,
 	};
 }
@@ -42,6 +62,14 @@ describe("applyServerMessage", () => {
 		expect(state.items.map((i) => i.id)).toEqual(["a", "b"]);
 		expect(state.dialog).toBeNull();
 		expect(state.status.status).toBe("idle");
+	});
+
+	test("a read only snapshot marks the screen, and a live one clears it", () => {
+		let state = applyServerMessage(initialAppState(), { type: "snapshot", snapshot: { ...snapshot([item("a")]), readOnly: true } });
+		expect(state.readOnly).toBe(true);
+
+		state = applyServerMessage(state, { type: "snapshot", snapshot: snapshot([item("b")]) });
+		expect(state.readOnly).toBe(false);
 	});
 
 	test("delta appends to the matching item only", () => {
@@ -140,5 +168,113 @@ describe("transcript updates", () => {
 		const started = applyServerMessage(initialAppState(), { type: "item", item: item("m1", "hello") });
 		const updated = applyServerMessage(started, { type: "item_update", item: item("gone", "stale") });
 		expect(updated.items.map((entry) => entry.id)).toEqual(["m1"]);
+	});
+});
+
+const commands: CommandView[] = [
+	{ name: "security", description: "Review the diff", hint: "path", subcommands: [{ name: "deep", description: "Deeper" }] },
+];
+
+const models: ModelView[] = [
+	{ provider: "anthropic", id: "claude", name: "Claude", contextWindow: 200000, reasoning: true },
+	{ provider: "openai", id: "gpt", name: "GPT", contextWindow: null, reasoning: false },
+];
+
+describe("commands and models", () => {
+	test("a snapshot carries omp's command list", () => {
+		const state = applyServerMessage(initialAppState(), {
+			type: "snapshot",
+			snapshot: { ...snapshot([]), commands },
+		});
+		expect(state.commands).toEqual(commands);
+	});
+
+	test("the commands message replaces the list", () => {
+		const started = applyServerMessage(initialAppState(), { type: "snapshot", snapshot: { ...snapshot([]), commands } });
+		const state = applyServerMessage(started, { type: "commands", commands: [] });
+		expect(state.commands).toEqual([]);
+	});
+
+	test("the models message replaces the list, the levels, and clears an old failure", () => {
+		const failed = applyServerMessage(initialAppState(), {
+			type: "models",
+			models: [],
+			thinkingLevels: [],
+			error: "get_available_models failed",
+		});
+		expect(failed.modelsError).toBe("get_available_models failed");
+
+		const state = applyServerMessage(failed, { type: "models", models, thinkingLevels: ["low", "high"] });
+		expect(state.models).toEqual(models);
+		expect(state.thinkingLevels).toEqual(["low", "high"]);
+		expect(state.modelsError).toBeNull();
+	});
+
+	test("a failed models read keeps the known list and reports the error", () => {
+		const known = applyServerMessage(initialAppState(), { type: "models", models, thinkingLevels: ["high"] });
+		const state = applyServerMessage(known, {
+			type: "models",
+			models: [],
+			thinkingLevels: [],
+			error: "get_available_models failed: timeout",
+		});
+		expect(state.models).toEqual(models);
+		expect(state.thinkingLevels).toEqual(["high"]);
+		expect(state.modelsError).toBe("get_available_models failed: timeout");
+	});
+});
+
+describe("queue restored", () => {
+	test("the restored texts land after the draft, one blank line apart", () => {
+		const typed = withDraft(initialAppState(), "half typed");
+		const state = applyServerMessage(typed, { type: "queue_restored", steering: ["first"], followUp: ["second", "third"] });
+		expect(state.draft).toBe("half typed\n\nfirst\n\nsecond\n\nthird");
+	});
+
+	test("an empty restore leaves an empty draft empty", () => {
+		const state = applyServerMessage(initialAppState(), { type: "queue_restored", steering: [], followUp: [] });
+		expect(state.draft).toBe("");
+	});
+
+	test("an empty restore leaves a typed draft alone", () => {
+		const typed = withDraft(initialAppState(), "half typed");
+		const state = applyServerMessage(typed, { type: "queue_restored", steering: [], followUp: [] });
+		expect(state.draft).toBe("half typed");
+	});
+
+	test("a blank draft is dropped instead of becoming the first line", () => {
+		const typed = withDraft(initialAppState(), "  \n ");
+		const state = applyServerMessage(typed, { type: "queue_restored", steering: [""], followUp: ["only"] });
+		expect(state.draft).toBe("only");
+	});
+});
+
+describe("view state", () => {
+	test("openSheet opens one sheet and null closes it", () => {
+		const opened = openSheet(initialAppState(), "thinking");
+		expect(opened.sheet).toBe("thinking");
+		expect(openSheet(opened, null).sheet).toBeNull();
+	});
+
+	test("todos and thinking visibility toggle", () => {
+		const defaulted = initialAppState();
+		expect(defaulted.todosOpen).toBe(false);
+		expect(defaulted.thinkingVisible).toBe(true);
+
+		const shut = toggleThinkingVisible(toggleTodos(defaulted));
+		expect(shut.todosOpen).toBe(true);
+		expect(shut.thinkingVisible).toBe(false);
+	});
+
+	test("tools cycle through expand all, collapse all, and per card", () => {
+		// null means every card keeps its own state, which is the default.
+		const defaulted = initialAppState();
+		expect(defaulted.toolsOpen).toBeNull();
+
+		const expanded = toggleTools(defaulted);
+		expect(expanded.toolsOpen).toBe(true);
+		const collapsed = toggleTools(expanded);
+		expect(collapsed.toolsOpen).toBe(false);
+		expect(toggleTools(collapsed).toolsOpen).toBeNull();
 	});
 });

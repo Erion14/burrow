@@ -7,14 +7,19 @@ import {
 	applyServerMessage,
 	initialAppState,
 	openChat,
+	openSheet,
 	showScreen,
 	showSessions,
+	toggleThinkingVisible,
+	toggleTodos,
+	toggleTools,
 	withConnection,
 	withDraft,
 	withRemoteOff,
 	withWorkspaceFilter,
 } from "./lib/app-state";
 import { type Connection, createConnection } from "./lib/conn";
+import { turnRemoteOn } from "./lib/wake";
 import { ChatScreen, DiffScreen, RemoteOffView, SessionsScreen } from "./screens";
 
 const WAKE_POLL_ATTEMPTS = 30;
@@ -128,7 +133,7 @@ export function App() {
 			abort: () => connRef.current?.send({ type: "abort" }),
 			answerDialog: (dialogId, answer) => connRef.current?.send({ type: "answer", dialogId, answer }),
 			discardDialog: (dialogId) => connRef.current?.send({ type: "discard_dialog", dialogId }),
-			async handOffToLaptop() {
+			async handOffToHost() {
 				const sessionId = stateRef.current.sessionId;
 				if (sessionId === null) return;
 				const response = await post(`/api/sessions/${encodeURIComponent(sessionId)}/stop`);
@@ -150,6 +155,26 @@ export function App() {
 				setState((current) => openChat(applyServerMessage(current, { type: "session", session }), session.id));
 				setEpoch((value) => value + 1);
 			},
+			async watchSession(sessionFile) {
+				const response = await post("/api/sessions/watch", { sessionFile });
+				if (response === null || !response.ok) {
+					fail(response === null ? "Could not reach Burrow" : await errorText(response));
+					return;
+				}
+				const { session } = (await response.json()) as { session: SessionSummary };
+				setState((current) => openChat(applyServerMessage(current, { type: "session", session }), session.id));
+				setEpoch((value) => value + 1);
+			},
+			async takeOver(sessionFile) {
+				const response = await post("/api/sessions/adopt", { sessionFile });
+				if (response === null || !response.ok) {
+					fail(response === null ? "Could not reach Burrow" : await errorText(response));
+					return;
+				}
+				const { session } = (await response.json()) as { session: SessionSummary };
+				setState((current) => openChat(applyServerMessage(current, { type: "session", session }), session.id));
+				setEpoch((value) => value + 1);
+			},
 			showSessions() {
 				if (location.search !== "") history.replaceState(null, "", "/");
 				setState((current) => showSessions(current));
@@ -157,9 +182,14 @@ export function App() {
 			},
 			showScreen: (screen) => setState((current) => showScreen(current, screen)),
 			async turnRemoteOn() {
-				const response = await post("/wake");
-				if (response === null || !response.ok) {
-					fail("Could not reach the laptop. Is it on the tailnet?");
+				const outcome = await turnRemoteOn({
+					post: async () => (await post("/wake"))?.ok === true,
+					burrowUp: loadBootstrap,
+					attempts: 3,
+					delayMs: 1000,
+				});
+				if (outcome === "no-answer") {
+					fail("The host did not answer the wake request. Is Tailscale up on both devices?");
 					return;
 				}
 				// Burrow needs a few seconds to start after the wake call.
@@ -172,13 +202,32 @@ export function App() {
 			async turnRemoteOff() {
 				const response = await post("/wake/off");
 				if (response === null || !response.ok) {
-					fail(response === null ? "Could not reach the laptop" : await errorText(response));
+					fail(response === null ? "Could not reach the host" : await errorText(response));
 					return;
 				}
 				setBootstrapFailed(true);
 				setState((current) => withRemoteOff(current, true));
 			},
 			refreshSessions: () => void loadBootstrap(),
+			setModel: (provider, id) => connRef.current?.send({ type: "set_model", provider, modelId: id }),
+			cycleModel: () => connRef.current?.send({ type: "cycle_model" }),
+			setThinking: (level) => connRef.current?.send({ type: "set_thinking", level }),
+			cycleThinking: () => connRef.current?.send({ type: "cycle_thinking" }),
+			compact: () => connRef.current?.send({ type: "compact" }),
+			removeQueued: (text, queue) => connRef.current?.send({ type: "remove_queued", text, queue }),
+			promoteQueued: (text) => connRef.current?.send({ type: "promote_queued", text }),
+			restoreQueue: () => connRef.current?.send({ type: "restore_queue" }),
+			cancelSubagent: (subagentId) => connRef.current?.send({ type: "cancel_subagent", subagentId }),
+			steerSubagent: (subagentId, message) => connRef.current?.send({ type: "steer_subagent", subagentId, message }),
+			renameSession: (name) => connRef.current?.send({ type: "rename_session", name }),
+			goalAction: (op) => connRef.current?.send({ type: "goal_action", op }),
+			bash: (command) => connRef.current?.send({ type: "bash", command }),
+			listModels: () => connRef.current?.send({ type: "list_models" }),
+			refreshState: () => connRef.current?.send({ type: "refresh_state" }),
+			openSheet: (sheet) => setState((current) => openSheet(current, sheet)),
+			toggleTodos: () => setState((current) => toggleTodos(current)),
+			toggleThinkingVisible: () => setState((current) => toggleThinkingVisible(current)),
+			toggleTools: () => setState((current) => toggleTools(current)),
 		};
 	}, []);
 	actionsRef.current = actions;

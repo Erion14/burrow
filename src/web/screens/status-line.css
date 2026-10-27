@@ -1,0 +1,104 @@
+/* omp's status line as one sideways scrolling row. It reads the theme variables
+   from styles.css and styles nothing outside .status-line. */
+
+.status-line {
+	display: flex;
+	flex-wrap: nowrap;
+	align-items: center;
+	/* The row scrolls past the last segment instead of squeezing a chip into an
+	   ellipsis, and a sideways swipe scrolls the row, never the page behind it. */
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+	scrollbar-width: none;
+	touch-action: pan-x;
+	min-height: 44px;
+	padding: 0 6px;
+	background: var(--status-line-bg);
+	border-top: 1px solid var(--border-muted);
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.status-line::-webkit-scrollbar {
+	display: none;
+}
+
+.status-line .state {
+	font-weight: 600;
+}
+
+/* Every segment is either a chip that opens something or a read only chip, so
+   they share one shape: 40 tall for a finger, no border of their own. */
+.status-line .sl-chip {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5ch;
+	min-height: 40px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 12px;
+	line-height: 1;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.status-line button.sl-chip:active {
+	background: var(--selected-bg);
+}
+
+.status-line .icon {
+	flex: none;
+	width: 1.4ch;
+	text-align: center;
+}
+
+.status-line .sl-model {
+	color: var(--accent);
+}
+
+/* A field omp has not reported yet reads as a placeholder, not as a value. */
+.status-line .sl-chip.is-unknown {
+	color: var(--dim);
+}
+
+.status-line .sl-context {
+	color: var(--muted);
+}
+
+.status-line .sl-context.is-high {
+	color: var(--warning);
+}
+
+.status-line .sl-todos {
+	color: var(--muted);
+}
+
+.status-line .sl-todos.is-open {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	color: var(--text);
+}
+
+.status-line .sl-agents {
+	color: var(--status-line-subagents);
+}
+
+/* The repo name is the one segment that gives way: it ellipsises instead of
+   pushing the link mark out of the first screenful. */
+.status-line .sl-repo {
+	display: inline-flex;
+	align-items: center;
+	min-height: 40px;
+	max-width: 40%;
+	font-size: 12px;
+}
+
+.status-line .conn {
+	margin-left: 0;
+}

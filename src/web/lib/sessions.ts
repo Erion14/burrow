@@ -2,7 +2,7 @@
 // and everything resumable, grouped by the repo the session started in, so
 // `code`, `rausoft` and `burrow` do not run together in one stream.
 
-import type { SessionSummary } from "../../shared/types";
+import type { SessionStatus, SessionSummary } from "../../shared/types";
 
 export interface SessionGroup {
 	repo: string;
@@ -40,4 +40,29 @@ export function workspaceOptions(sessions: SessionSummary[]): WorkspaceOption[] 
 /** null means every workspace. */
 export function filterSessions(sessions: SessionSummary[], repo: string | null): SessionSummary[] {
 	return repo === null ? sessions : sessions.filter((session) => session.repo === repo);
+}
+
+/**
+ * Keeps the sessions whose title or repo name contains the query, case insensitively.
+ * A blank query is not a search at all, so the same array comes back untouched rather
+ * than a copy: the phone shows the list it already had.
+ */
+export function filterSessionsByQuery(sessions: SessionSummary[], query: string): SessionSummary[] {
+	const needle = query.trim().toLowerCase();
+	if (needle === "") return sessions;
+	return sessions.filter((session) => session.title.toLowerCase().includes(needle) || session.repoName.toLowerCase().includes(needle));
+}
+
+const ATTENTION_RANK: Record<SessionStatus, number> = { needs_answer: 0, working: 1, idle: 2, stopped: 3 };
+
+/**
+ * Puts the session that wants the phone first: needs_answer, then working, then idle,
+ * then stopped. The server's order (newest first) survives inside a status, so the sort
+ * is stable and two sessions in the same state never swap places.
+ */
+export function sortSessionsByAttention(sessions: SessionSummary[]): SessionSummary[] {
+	return sessions
+		.map((session, index) => ({ session, index }))
+		.sort((a, b) => ATTENTION_RANK[a.session.status] - ATTENTION_RANK[b.session.status] || a.index - b.index)
+		.map((entry) => entry.session);
 }

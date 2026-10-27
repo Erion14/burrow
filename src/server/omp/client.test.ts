@@ -22,7 +22,9 @@ afterEach(() => {
 
 async function start(args: string[] = [], extra: { resumeFile?: string; env?: Record<string, string> } = {}) {
 	const proc = await startOmpProcess({
-		command: ["bun", FAKE, ...args],
+		// These tests assert exact event streams, so the startup commands frame (which
+		// omp sends right after ready) is left out here.
+		command: ["bun", FAKE, "--no-commands-frame", ...args],
 		cwd: dir,
 		env: extra.env ?? {},
 		...(extra.resumeFile ? { resumeFile: extra.resumeFile } : {}),

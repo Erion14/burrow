@@ -3,3 +3,8 @@ export { DiffScreen } from "./diff-screen";
 export { SessionsScreen } from "./sessions-screen";
 export type { ScreenProps } from "./props";
 export { RemoteOffView } from "./remote-off";
+export { KeyBar } from "./key-bar";
+export { CompletionMenu } from "./completion-menu";
+export { StatusLine } from "./status-line";
+export { TodosPanel } from "./todos-panel";
+export { PickerSheet } from "./picker-sheet";

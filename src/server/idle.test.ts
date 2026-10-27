@@ -13,6 +13,8 @@ function snap(over: Partial<{ settled: boolean; pending: boolean; dialog: boolea
 		subagents: [],
 		queued: { steering: over.steering ?? [], followUp: over.followUp ?? [] },
 		status: { status: "idle", isSettled: over.settled ?? true, hasPendingAsyncWork: over.pending ?? false },
+		readOnly: false,
+		commands: [],
 		truncated: false,
 	};
 }
@@ -25,7 +27,7 @@ function setup(failStop = false) {
 	const stops: Array<[string, StopReason]> = [];
 	const stoppedCb: string[] = [];
 	const manager = {
-		runningIds: () => [...running],
+		heldIds: () => [...running],
 		snapshot: (id: string) => snaps.get(id) ?? null,
 		stop: async (id: string, reason: StopReason): Promise<Result<null>> => {
 			stops.push([id, reason]);
@@ -166,7 +168,7 @@ describe("idle stopper", () => {
 		expect(t.stoppedCb).toEqual([]);
 
 		const manager = {
-			runningIds: () => ["s1"],
+			heldIds: () => ["s1"],
 			snapshot: () => snap(),
 			stop: async (): Promise<Result<null>> => ({ ok: false, error: { code: "x", message: "no" } }),
 		} as unknown as SessionManagerPort;

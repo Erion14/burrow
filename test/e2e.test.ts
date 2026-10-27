@@ -397,7 +397,7 @@ describe("burrow end to end", () => {
 		const entry = after.sessions.find((s) => s.id === SESSION_ID);
 		expect(entry).toBeDefined();
 		expect(entry!.running).toBe(false);
-		expect(entry!.openAtLaptop).toBe(false);
+		expect(entry!.openElsewhere).toBe(false);
 		expect(entry!.sessionFile).toBe(env.sessionFile);
 		expect(after.sessions.filter((s) => s.running)).toEqual([]);
 	}, 40_000);

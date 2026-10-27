@@ -1,0 +1,82 @@
+/* Key bar: one scrollable strip of keys above the composer. It reads the theme
+   variables from styles.css and styles nothing of its own outside .key-bar. */
+
+.key-bar {
+	display: flex;
+	gap: 3px;
+	padding: 6px 2px;
+	overflow-x: auto;
+	scrollbar-width: none;
+	/* A fast tap is a key press, never a page zoom; a swipe scrolls the strip and
+	   never the page behind it. */
+	touch-action: manipulation;
+	overscroll-behavior: contain;
+}
+
+.key-bar::-webkit-scrollbar {
+	display: none;
+}
+
+.key-group {
+	display: flex;
+	flex: none;
+	gap: 3px;
+}
+
+.key-group + .key-group {
+	margin-left: 3px;
+	padding-left: 6px;
+	border-left: 1px solid var(--border-muted);
+}
+
+.key-btn {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	/* A finger needs 40 square; the strip scrolls past the screen edge instead of
+	   shrinking its keys. */
+	min-width: 40px;
+	min-height: 40px;
+	padding: 0 6px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--tool-pending-bg);
+	color: var(--muted);
+	font: inherit;
+	font-size: 13px;
+	line-height: 1;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.key-btn:active:not(:disabled) {
+	background: var(--selected-bg);
+}
+
+.key-btn:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+/* A sticky modifier stays armed until it is tapped again. */
+.key-mod {
+	font-weight: 700;
+	letter-spacing: 0.02em;
+}
+
+.key-mod.is-armed {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 22%, var(--page-bg));
+	color: var(--accent);
+}
+
+.key-fixed {
+	font-size: 12.5px;
+}
+
+.key-sym {
+	min-width: 42px;
+	color: var(--text);
+	font-size: 15px;
+}

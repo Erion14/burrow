@@ -1,0 +1,76 @@
+/* The changes screen turned into a review surface for a phone. The file blocks
+   ride on the diff styles in styles.css; this file adds the controls strip, the
+   copy button and the fold marker, and styles nothing outside .diff-screen. */
+
+.diff-controls {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--border-muted);
+}
+
+/* A row of 44px tap targets would be taller than the diffs it controls and would
+   push the first file off a phone screen, so the strip is dense. The buttons sit
+   at the top of the scroll, where the thumb already is. */
+.diff-control {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.6ch;
+	min-height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--dim);
+	font: 12px/1 var(--mono);
+}
+
+.diff-control:active {
+	background: var(--selected-bg);
+	color: var(--text);
+}
+
+/* The jump list is the control that can be pushed off a narrow row, so it takes
+   the free space before the pair. */
+.diff-jump {
+	margin-left: auto;
+	color: var(--accent);
+}
+
+.diff-copy {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 2.6ch;
+	min-height: 26px;
+	padding: 0 4px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--dim);
+	font: 11px/1 var(--mono);
+}
+
+.diff-copy:active {
+	background: var(--selected-bg);
+}
+
+/* The copy happened, which is the only state worth a colour. */
+.diff-copy.is-copied {
+	color: var(--success);
+}
+
+/* The chevron already reports the fold state, so the native triangle would be a
+   second and misaligned marker. WebKit keeps drawing it without this. */
+.diff-head::-webkit-details-marker {
+	display: none;
+}
+
+/* A file picked from the jump list must land below the sticky file head rather
+   than under it, so it clears the height the head sticks at. */
+.diff-file {
+	scroll-margin-top: calc(var(--safe-top) + var(--row-h) + var(--status-h) + 2px);
+}

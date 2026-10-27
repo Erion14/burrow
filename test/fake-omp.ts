@@ -1,11 +1,12 @@
 // A runnable stand-in for `omp --mode rpc-ui`, started by the same spawn path as
 // the real thing. It speaks the RPC protocol over stdio: ready frame, responses
 // by id, canned events, and `rpc_chunk` frames. Control commands (`__emit`,
-// `__chunked`, `__script`, `__exit`, `__stderr`, `__hold`) let tests drive it.
+// `__chunked`, `__script`, `__exit`, `__stderr`, `__hold`, `__state`, `__bash`,
+// `__queue`) let tests drive it.
 //
 // Flags: --script <json file> (steps played after each `prompt`), --log <path>,
 // --session-id, --session-file, --hold-file <path>, --crash-after-ready,
-// --body-file <path>, --resume=<file> (as passed by the client).
+// --body-file <path>, --no-commands-frame, --resume=<file> (as passed by the client).
 
 import { appendFileSync, openSync, readFileSync } from "node:fs";
 
@@ -23,6 +24,13 @@ const options = {
 	crashAfterReady: false,
 	bodyFile: null as string | null,
 	resume: null as string | null,
+	noCommandsFrame: false,
+	/** Replaces the get_state fields below the run flags; `__state` sets it. */
+	state: null as Record<string, unknown> | null,
+	/** What `bash` answers; `__bash` sets it. */
+	bash: {} as Record<string, unknown>,
+	/** What `abort_and_restore_queue` answers; `__queue` sets it. */
+	queue: {} as Record<string, unknown>,
 };
 
 const argv = process.argv.slice(2);
@@ -35,8 +43,36 @@ for (let i = 0; i < argv.length; i++) {
 	else if (arg === "--hold-file") options.holdFile = argv[++i] ?? null;
 	else if (arg === "--crash-after-ready") options.crashAfterReady = true;
 	else if (arg === "--body-file") options.bodyFile = argv[++i] ?? null;
+	else if (arg === "--no-commands-frame") options.noCommandsFrame = true;
 	else if (arg.startsWith("--resume=")) options.resume = arg.slice("--resume=".length);
 }
+
+/** The slash commands both the startup frame and `get_available_commands` report. */
+const COMMANDS = [
+	{
+		name: "security",
+		description: "Review code for vulnerabilities",
+		input: { hint: "<path or scope>" },
+		subcommands: [{ name: "audit", description: "Audit dependencies" }],
+	},
+	{ name: "clear", description: "Clear the conversation" },
+];
+
+const MODELS = [
+	{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Sonnet 4.5", contextWindow: 200000, reasoning: true },
+	{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5", contextWindow: 200000, reasoning: false },
+];
+
+const THINKING_LEVELS = ["off", "low", "medium", "high"];
+
+/** What `get_state` reports besides the run flags; `__state` replaces the whole set. */
+const DEFAULT_STATE = {
+	model: { provider: "anthropic", id: "claude-sonnet-4-5", name: "Sonnet 4.5" },
+	thinkingLevel: "medium",
+	contextUsage: { tokens: 1200, contextWindow: 200000, percent: 0.6 },
+	todoPhases: [],
+	goal: null,
+};
 
 // Keeps the descriptor open for the life of the process, like omp does with its session file.
 if (options.holdFile) openSync(options.holdFile, "a");
@@ -95,12 +131,19 @@ function success(id: unknown, command: string, data?: unknown) {
 	return { id, type: "response", command, success: true, ...(data === undefined ? {} : { data }) };
 }
 
+/** The get_state fields the run flags sit on: the `__state` replacement, or the defaults. */
+function stateFields(): Record<string, unknown> {
+	if (options.state === null) options.state = { ...DEFAULT_STATE };
+	return options.state;
+}
+
 function stateData() {
 	const sessionFile = options.sessionFile ?? options.resume;
 	return {
 		isStreaming: false,
 		isSettled: true,
 		hasPendingAsyncWork: false,
+		...stateFields(),
 		...(options.sessionId ? { sessionId: options.sessionId } : {}),
 		...(sessionFile ? { sessionFile } : {}),
 		...(options.resume ? { resume: options.resume } : {}),
@@ -132,17 +175,132 @@ async function handle(command: Record<string, unknown>): Promise<void> {
 		case "get_subagents":
 			await emit(success(id, type, { subagents: [] }));
 			return;
+		case "get_available_commands":
+			await emit(success(id, type, { commands: COMMANDS }));
+			return;
+		case "get_available_models":
+			await emit(success(id, type, { models: MODELS }));
+			return;
+		case "get_available_thinking_levels":
+			await emit(success(id, type, { levels: THINKING_LEVELS }));
+			return;
 		case "abort":
 		case "set_event_filter":
 		case "set_ask_dialog":
 		case "set_subagent_subscription":
 			await emit(success(id, type, {}));
 			return;
+		case "set_model": {
+			const provider = String(command.provider);
+			const modelId = String(command.modelId);
+			const model = MODELS.find((entry) => entry.provider === provider && entry.id === modelId);
+			if (!model) {
+				await emit({ id, type: "response", command: type, success: false, error: `Unknown model ${provider}/${modelId}` });
+				return;
+			}
+			stateFields().model = { provider: model.provider, id: model.id, name: model.name };
+			await emit(success(id, type, stateFields().model));
+			return;
+		}
+		case "cycle_model": {
+			const current = (stateFields().model as { id?: string } | null)?.id;
+			const next = MODELS[(MODELS.findIndex((entry) => entry.id === current) + 1) % MODELS.length]!;
+			stateFields().model = { provider: next.provider, id: next.id, name: next.name };
+			await emit(success(id, type, { model: stateFields().model, isScoped: false }));
+			return;
+		}
+		case "set_thinking_level":
+			stateFields().thinkingLevel = String(command.level);
+			await emit(success(id, type));
+			return;
+		case "cycle_thinking_level": {
+			const level = THINKING_LEVELS[(THINKING_LEVELS.indexOf(String(stateFields().thinkingLevel)) + 1) % THINKING_LEVELS.length]!;
+			stateFields().thinkingLevel = level;
+			await emit(success(id, type, { level }));
+			return;
+		}
+		case "compact":
+			await emit(success(id, type, { summary: "", firstKeptEntryId: "", tokensBefore: 0 }));
+			return;
+		case "set_session_name":
+			stateFields().sessionName = String(command.name);
+			await emit(success(id, type, { name: stateFields().sessionName }));
+			return;
+		case "remove_queued_message":
+			await emit(success(id, type, { removed: true }));
+			return;
+		case "promote_queued_message":
+			await emit(success(id, type, { promoted: true }));
+			return;
+		case "abort_and_restore_queue":
+			if (typeof options.queue.fail === "string") {
+				await emit({ id, type: "response", command: type, success: false, error: options.queue.fail });
+				return;
+			}
+			await emit(success(id, type, { steering: [], followUp: [], ...options.queue }));
+			return;
+		case "cancel_subagent":
+			await emit(success(id, type, { cancelled: true }));
+			return;
+		case "steer_subagent":
+			await emit(success(id, type, {}));
+			return;
+		case "goal": {
+			const op = String(command.op);
+			if (op === "drop") {
+				stateFields().goal = null;
+				await emit(success(id, type, { goal: null, state: null }));
+				return;
+			}
+			const state = op === "pause" ? "paused" : "active";
+			stateFields().goal = { objective: "ship phase 1.5", state };
+			await emit(success(id, type, { goal: stateFields().goal, state }));
+			return;
+		}
+		case "bash": {
+			// `delayMs` keeps the reply open so a test can see the running card first; `hold`
+			// never replies; `fail` rejects the command; anything else is the BashResult.
+			if (typeof options.bash.delayMs === "number") await Bun.sleep(options.bash.delayMs);
+			if (options.bash.hold === true) return;
+			if (typeof options.bash.fail === "string") {
+				await emit({ id, type: "response", command: type, success: false, error: options.bash.fail });
+				return;
+			}
+			await emit(
+				success(id, type, {
+					output: "",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					totalLines: 0,
+					totalBytes: 0,
+					workingDir: process.cwd(),
+					...options.bash,
+				}),
+			);
+			return;
+		}
 		case "extension_ui_response":
 			// A reply frame: logged above, never answered, like omp.
 			return;
 		case "__hold":
 			// Never answered, so a test can answer the id itself with a forged frame.
+			return;
+		case "__state":
+			// Replaces the get_state fields wholesale, so a test can drop one and prove
+			// the manager keeps the value the earlier read reported.
+			options.state = (command.state as Record<string, unknown> | undefined) ?? {};
+			await emit(success(id, type));
+			return;
+		case "__bash":
+			// What the next `bash` answers: an exit code, `truncated`, `fail`, `hold`, `delayMs`.
+			options.bash = (command.result as Record<string, unknown> | undefined) ?? {};
+			await emit(success(id, type));
+			return;
+		case "__queue":
+			// What the next `abort_and_restore_queue` answers, `fail` included.
+			options.queue = (command.result as Record<string, unknown> | undefined) ?? {};
+			await emit(success(id, type));
 			return;
 		case "__emit":
 			for (const frame of (command.frames as unknown[]) ?? []) await emit(frame);
@@ -180,6 +338,10 @@ if (options.crashAfterReady) {
 	await writeErr("fake omp crashed after ready\n");
 	process.exit(1);
 }
+
+// omp pushes the command list right after the ready frame; --no-commands-frame
+// leaves the phone with nothing but the get_available_commands request.
+if (!options.noCommandsFrame) await emit({ type: "available_commands_update", commands: COMMANDS });
 
 const decoder = new TextDecoder();
 let buffered = "";

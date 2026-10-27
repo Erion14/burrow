@@ -4,7 +4,9 @@
 
 import type { DialogAnswer, ServerMessage } from "../../shared/protocol";
 import type {
+	CommandView,
 	DialogView,
+	ModelView,
 	QueuedMessages,
 	RepoOption,
 	SessionSummary,
@@ -25,15 +27,41 @@ export interface AppActions {
 	answerDialog(dialogId: string, answer: DialogAnswer): void;
 	discardDialog(dialogId: string): void;
 	/** Stop Burrow's process so the session can be resumed with `omp -r <id>`. */
-	handOffToLaptop(): void;
+	handOffToHost(): void;
 	openSession(sessionId: string): void;
+	/** Opens a session file another process at the host holds, read only. */
+	watchSession(sessionFile: string): Promise<void>;
 	newSession(repoPath: string, sessionFile?: string): Promise<void>;
+	/** Stop the omp holding the session on the laptop and resume it here. */
+	takeOver(sessionFile: string): Promise<void>;
 	showSessions(): void;
 	selectWorkspace(repo: string | null): void;
 	showScreen(screen: Screen): void;
 	turnRemoteOn(): Promise<void>;
 	turnRemoteOff(): Promise<void>;
 	refreshSessions(): void;
+	/** omp settings and session mutation, each one a message on the wire. */
+	setModel(provider: string, id: string): void;
+	cycleModel(): void;
+	setThinking(level: string): void;
+	cycleThinking(): void;
+	compact(): void;
+	removeQueued(text: string, queue: "steering" | "followUp"): void;
+	promoteQueued(text: string): void;
+	restoreQueue(): void;
+	cancelSubagent(subagentId: string): void;
+	steerSubagent(subagentId: string, message: string): void;
+	renameSession(name: string): void;
+	goalAction(op: "resume" | "pause" | "drop"): void;
+	/** A `!` message: runs in the session's shell, never reaches the model. */
+	bash(command: string): void;
+	listModels(): void;
+	refreshState(): void;
+	/** View state: the phone owns these, the server never hears about them. */
+	openSheet(sheet: AppState["sheet"]): void;
+	toggleTodos(): void;
+	toggleThinkingVisible(): void;
+	toggleTools(): void;
 }
 
 export type Screen = "sessions" | "chat" | "diff";
@@ -58,6 +86,21 @@ export interface AppState {
 	/** The message being typed; kept here so switching screens does not lose it. */
 	draft: string;
 	error: string | null;
+	/** The chat is a read only view of a file another process at the host writes. */
+	readOnly: boolean;
+	/** omp's slash commands, for the composer's `/` menu. */
+	commands: CommandView[];
+	/** The last known model list; a failed read keeps it rather than emptying the picker. */
+	models: ModelView[];
+	thinkingLevels: string[];
+	modelsError: string | null;
+	/** Which picker sheet is open; one at a time, null for none. */
+	sheet: "models" | "thinking" | "goal" | null;
+	todosOpen: boolean;
+	/** Whether assistant thinking blocks are drawn at all. */
+	thinkingVisible: boolean;
+	/** null means every tool card keeps its own open state. */
+	toolsOpen: boolean | null;
 }
 
 /** Transcript items kept in the phone's memory; older ones fall off the top. */
@@ -77,11 +120,20 @@ export function initialAppState(): AppState {
 		subagents: [],
 		queued: { steering: [], followUp: [] },
 		status: IDLE_STATUS,
+		readOnly: false,
 		sessions: [],
 		repos: [],
 		workspaceFilter: null,
 		draft: "",
 		error: null,
+		commands: [],
+		models: [],
+		thinkingLevels: [],
+		modelsError: null,
+		sheet: null,
+		todosOpen: false,
+		thinkingVisible: true,
+		toolsOpen: null,
 	};
 }
 
@@ -122,10 +174,19 @@ export function applyServerMessage(state: AppState, message: ServerMessage): App
 				queued: snapshot.queued,
 				status: statusWithDialog(snapshot.status, snapshot.dialog),
 				sessions: mergeSession(state.sessions, snapshot.session),
+				readOnly: snapshot.readOnly,
+				commands: snapshot.commands,
 			};
 		}
 		case "sessions":
 			return { ...state, remoteOff: false, sessions: message.sessions, repos: message.repos };
+		case "commands":
+			return { ...state, commands: message.commands };
+		case "models":
+			// A read that failed reports itself here, and the phone keeps the list it
+			// already had rather than offering an empty picker.
+			if (message.error !== undefined) return { ...state, modelsError: message.error };
+			return { ...state, models: message.models, thinkingLevels: message.thinkingLevels, modelsError: null };
 		case "item":
 			return { ...state, items: withItem(state.items, message.item) };
 		case "item_update": {
@@ -148,6 +209,15 @@ export function applyServerMessage(state: AppState, message: ServerMessage): App
 			return { ...state, subagents: message.subagents };
 		case "queued":
 			return { ...state, queued: message.queued };
+		case "queue_restored": {
+			// The queue came back as text, so the composer is the only place it can go:
+			// the draft stays first and each restored entry gets its own paragraph.
+			const restored = [...message.steering, ...message.followUp]
+				.map((text) => text.trim())
+				.filter((text) => text !== "");
+			const entries = state.draft.trim() === "" ? restored : [state.draft, ...restored];
+			return { ...state, draft: entries.join("\n\n") };
+		}
 		case "session":
 			return { ...state, session: message.session, sessions: mergeSession(state.sessions, message.session) };
 		case "ack":
@@ -198,6 +268,7 @@ export function openChat(state: AppState, sessionId: string): AppState {
 		subagents: [],
 		queued: { steering: [], followUp: [] },
 		status: IDLE_STATUS,
+		readOnly: false,
 		error: null,
 	};
 }
@@ -217,4 +288,23 @@ export function showSessions(state: AppState): AppState {
 		subagents: [],
 		error: null,
 	};
+}
+
+/** Which sheet is open is view state: opening one closes whatever was open. */
+export function openSheet(state: AppState, sheet: AppState["sheet"]): AppState {
+	return { ...state, sheet };
+}
+
+export function toggleTodos(state: AppState): AppState {
+	return { ...state, todosOpen: !state.todosOpen };
+}
+
+export function toggleThinkingVisible(state: AppState): AppState {
+	return { ...state, thinkingVisible: !state.thinkingVisible };
+}
+
+/** Expand all, collapse all, then back to letting every card decide for itself. */
+export function toggleTools(state: AppState): AppState {
+	if (state.toolsOpen === null) return { ...state, toolsOpen: true };
+	return { ...state, toolsOpen: state.toolsOpen ? false : null };
 }

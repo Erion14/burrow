@@ -2,11 +2,13 @@ import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import type { SessionSummary } from "../../shared/types";
 import { relativeTime } from "../lib/format";
-import { filterSessions, groupSessionsByRepo, workspaceOptions } from "../lib/sessions";
-import { BurrowMark, LaptopIcon, PowerIcon, RefreshIcon } from "./icons";
+import { filterSessions, filterSessionsByQuery, groupSessionsByRepo, sortSessionsByAttention, workspaceOptions } from "../lib/sessions";
+import { BurrowMark } from "./icons";
 import type { ScreenProps } from "./props";
 import { RemoteOffView } from "./remote-off";
-import { ConnMark, STATUS_LABELS, Sep, StatusGlyph } from "./status-glyph";
+import "./sessions-screen.css";
+import { ConnMark, STATUS_LABELS, Sep, StatusGlyph, StatusMark } from "./status-glyph";
+import { Symbol } from "./symbol";
 
 function RowBody({ session, children }: { session: SessionSummary; children: ComponentChildren }) {
 	return (
@@ -26,16 +28,22 @@ function RowBody({ session, children }: { session: SessionSummary; children: Com
 	);
 }
 
-function SessionRow({ session, onTap }: { session: SessionSummary; onTap: () => void }) {
-	// Not a button at all when blocked: nothing to press, so nothing to mistake for one.
-	if (session.openAtLaptop) {
+function SessionRow({ session, busy, onTap }: { session: SessionSummary; busy: boolean; onTap: () => void }) {
+	// Held by another process: pressing it opens the read only view of that file, which is
+	// where taking the session over lives. The omp case says so, because only an omp can be
+	// stopped to make the session writable again.
+	if (session.openElsewhere) {
 		return (
 			<li>
-				<div class="row row-blocked">
+				<button type="button" class="row" disabled={busy} onClick={onTap}>
 					<RowBody session={session}>
-						<span class="laptop-note"><LaptopIcon />open at laptop</span>
+						<span class="elsewhere-note">
+							<Symbol k="ui.laptop" />
+							{session.canTakeOver ? "in use on the laptop" : "in use elsewhere"}
+						</span>
+						<span class="read-only-tag">read</span>
 					</RowBody>
-				</div>
+				</button>
 			</li>
 		);
 	}
@@ -61,6 +69,8 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 	const [picking, setPicking] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [turningOn, setTurningOn] = useState(false);
+	// The search text stays in the screen: it is a way to read the list, not app state.
+	const [query, setQuery] = useState("");
 
 	const start = async (repoPath: string) => {
 		if (busy) return;
@@ -84,6 +94,13 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 
 	const tap = (session: SessionSummary) => {
 		if (busy) return;
+		// A held session is read from the file the other process is writing.
+		if (session.openElsewhere) {
+			if (session.sessionFile === null) return;
+			setBusy(true);
+			void actions.watchSession(session.sessionFile).finally(() => setBusy(false));
+			return;
+		}
 		if (session.running) {
 			actions.openSession(session.id);
 			return;
@@ -97,7 +114,7 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 
 	const open = state.connection === "open";
 	const loading = state.connection === "connecting" && state.sessions.length === 0;
-	const visible = filterSessions(state.sessions, state.workspaceFilter);
+	const visible = sortSessionsByAttention(filterSessionsByQuery(filterSessions(state.sessions, state.workspaceFilter), query));
 	const options = workspaceOptions(state.sessions);
 	const groups = groupSessionsByRepo(visible);
 	const needs = visible.filter((session) => session.status === "needs_answer").length;
@@ -110,17 +127,39 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 					<BurrowMark class="bar-mark" />
 					<h1 class="bar-title">burrow</h1>
 					<button type="button" class="btn btn-bar btn-icon" aria-label="Refresh" title="Refresh" onClick={() => actions.refreshSessions()}>
-						<RefreshIcon />
+						<Symbol k="ui.refresh" />
 					</button>
-					<button type="button" class="btn btn-danger" onClick={() => void actions.turnRemoteOff()}>
-						<PowerIcon />
-						Remote OFF
-					</button>
+					{open ? (
+						<button type="button" class="btn btn-danger" onClick={() => void actions.turnRemoteOff()}>
+							<Symbol k="ui.power" />
+							Remote OFF
+						</button>
+					) : (
+						<button type="button" class="btn btn-primary navbar-wake" disabled={turningOn} onClick={() => void turnOn()}>
+							<Symbol k="ui.power" />
+							{turningOn ? "turning on…" : "Turn ON"}
+						</button>
+					)}
+				</div>
+				<div class="sessions-search-row">
+					<input
+						type="search"
+						class="sessions-search"
+						aria-label="Search sessions"
+						placeholder="search title or repo"
+						value={query}
+						onInput={(event) => setQuery(event.currentTarget.value)}
+					/>
+					{query === "" ? null : (
+						<button type="button" class="btn btn-quiet sessions-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
+							✕
+						</button>
+					)}
 				</div>
 				<div class="statusline">
 					<span class="seg-count">{visible.length} {visible.length === 1 ? "session" : "sessions"}</span>
-					{needs > 0 ? <><Sep /><span class="state state-needs_answer"><span class="glyph glyph-needs_answer" aria-hidden="true" />{needs} need answer</span></> : null}
-					{working > 0 ? <><Sep /><span class="state state-working"><span class="glyph glyph-working" aria-hidden="true" />{working} working</span></> : null}
+					{needs > 0 ? <><Sep /><span class="state state-needs_answer"><StatusMark status="needs_answer" />{needs} need answer</span></> : null}
+					{working > 0 ? <><Sep /><span class="state state-working"><StatusMark status="working" />{working} working</span></> : null}
 					<ConnMark connection={state.connection} />
 				</div>
 			</header>
@@ -187,7 +226,7 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 							</header>
 							<ul class="list">
 								{group.sessions.map((session) => (
-									<SessionRow key={session.id} session={session} onTap={() => tap(session)} />
+									<SessionRow key={session.id} session={session} busy={busy} onTap={() => tap(session)} />
 								))}
 							</ul>
 						</section>
@@ -196,9 +235,19 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 			) : null}
 			{!loading && state.sessions.length > 0 && visible.length === 0 ? (
 				<section class="panel empty">
-					<p class="panel-title">workspace</p>
-					<p class="panel-state state-stopped">○ no sessions here right now</p>
-					<button type="button" class="btn btn-quiet" onClick={() => actions.selectWorkspace(null)}>show all workspaces</button>
+					{query.trim() === "" ? (
+						<>
+							<p class="panel-title">workspace</p>
+							<p class="panel-state state-stopped">○ no sessions here yet</p>
+							<button type="button" class="btn btn-quiet" onClick={() => actions.selectWorkspace(null)}>show all workspaces</button>
+						</>
+					) : (
+						<>
+							<p class="panel-title">search</p>
+							<p class="panel-state state-stopped">○ nothing matches {query.trim()}</p>
+							<button type="button" class="btn btn-quiet" onClick={() => setQuery("")}>clear search</button>
+						</>
+					)}
 				</section>
 			) : null}
 			{!loading && state.sessions.length === 0 ? (
@@ -206,7 +255,7 @@ export function SessionsScreen({ state, actions }: ScreenProps) {
 					<p class="panel-title">sessions</p>
 					<p class="panel-state state-stopped">○ no sessions yet</p>
 					<p class="panel-detail">Tap <kbd>+ new agent</kbd> to start omp in one of your repos.</p>
-					<p class="panel-detail">Sessions you start at the laptop show up here too.</p>
+					<p class="panel-detail">Sessions you start at the host show up here too.</p>
 				</section>
 			) : null}
 		</main>

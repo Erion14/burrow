@@ -6,7 +6,7 @@
 // the manual smoke against real omp can settle them.
 
 import type { ServerMessage } from "../../shared/protocol";
-import type { SubagentView, ToolCard, TranscriptItem } from "../../shared/types";
+import type { BashCard, SubagentView, ToolCard, TranscriptItem } from "../../shared/types";
 import type { OmpEvent } from "../omp/port";
 
 export const SNAPSHOT_ITEM_LIMIT = 500;
@@ -14,11 +14,27 @@ const STORE_ITEM_LIMIT = 2000;
 const TOOL_OUTPUT_LIMIT = 4000;
 const TOOL_ARGS_LIMIT = 120;
 const DETAIL_LIMIT = 160;
+/** A terminal card on a phone screen is a glance, not a log; only the end of the output is worth it. */
+const BASH_OUTPUT_LIMIT = 8 * 1024;
+const BASH_CUT_MARKER = "… (earlier output cut)";
+
+/** How a `bash` command ended, as omp's `BashResult` reports it. */
+export interface BashOutcome {
+	status: "done" | "error";
+	exitCode: number | null;
+	output: string;
+	cancelled?: boolean;
+	truncated?: boolean;
+}
 
 export interface Transcript {
 	handle(event: OmpEvent): ServerMessage[];
 	snapshot(): { items: TranscriptItem[]; subagents: SubagentView[]; truncated: boolean };
 	appendNotice(text: string): ServerMessage;
+	/** Announces a `bash` card before the command runs; `finishBash` updates that same item. */
+	startBash(command: string): { id: string; message: ServerMessage };
+	/** Finishes a `bash` card; null when the item has already fallen out of the store. */
+	finishBash(id: string, outcome: BashOutcome): ServerMessage | null;
 }
 
 type Rec = Record<string, unknown>;
@@ -56,11 +72,18 @@ function oneLine(text: string, limit: number): string {
 	return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
 }
 
-function tail(text: string): string {
+export function toolOutputTail(text: string): string {
 	return text.length > TOOL_OUTPUT_LIMIT ? text.slice(text.length - TOOL_OUTPUT_LIMIT) : text;
 }
 
-function summariseArgs(args: unknown): string {
+/** The end of a bash run output, marked when anything before it was dropped. */
+export function bashText(output: string, truncated: boolean): string {
+	const cut = truncated || output.length > BASH_OUTPUT_LIMIT;
+	const body = output.length > BASH_OUTPUT_LIMIT ? output.slice(output.length - BASH_OUTPUT_LIMIT) : output;
+	return cut ? `${BASH_CUT_MARKER}\n${body}` : body;
+}
+
+export function summariseArgs(args: unknown): string {
 	if (args === undefined || args === null) return "";
 	if (typeof args === "string") return oneLine(args, TOOL_ARGS_LIMIT);
 	try {
@@ -71,7 +94,7 @@ function summariseArgs(args: unknown): string {
 }
 
 /** Tool output as text: a string, text blocks (directly or under `content`), or JSON. */
-function outputText(value: unknown): string | null {
+export function outputText(value: unknown): string | null {
 	if (value === undefined || value === null) return null;
 	if (typeof value === "string") return value;
 	if (Array.isArray(value)) {
@@ -111,6 +134,7 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 	const subagents = new Map<string, SubagentView>();
 	let dropped = false;
 	let noticeCount = 0;
+	let bashCount = 0;
 
 	function add(item: TranscriptItem): ServerMessage {
 		items.push(item);
@@ -123,11 +147,17 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 			}
 			dropped = true;
 		}
-		return { type: "item", item: { ...item } };
+		// The copy matters: the store's item keeps mutating (tool and bash cards), and the
+		// hub serializes queued messages up to one flush later.
+		return { type: "item", item: copyOf(item) };
 	}
 
 	function copyOf(item: TranscriptItem): TranscriptItem {
-		return item.tool ? { ...item, tool: { ...item.tool } } : { ...item };
+		return {
+			...item,
+			...(item.tool ? { tool: { ...item.tool } } : {}),
+			...(item.bash ? { bash: { ...item.bash } } : {}),
+		};
 	}
 
 	function handleMessage(event: OmpEvent): ServerMessage[] {
@@ -197,7 +227,7 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 	function handleToolResult(message: unknown): ServerMessage[] {
 		if (!isRec(message) || typeof message.toolCallId !== "string" || message.toolCallId === "") return [];
 		const callId = message.toolCallId;
-		const output = tail(outputText(message.content) ?? "");
+		const output = toolOutputTail(outputText(message.content) ?? "");
 		const status = message.isError === true ? "error" : "done";
 		const itemId = `tool:${callId}`;
 		const existing = byId.get(itemId);
@@ -283,7 +313,7 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 			if (!existing?.tool) return [];
 			const text = outputText(result);
 			if (text === null) return [];
-			existing.tool.output = tail(text);
+			existing.tool.output = toolOutputTail(text);
 			return [{ type: "item_update", item: copyOf(existing) }];
 		}
 
@@ -305,7 +335,7 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 		const card = item.tool;
 		if (!card) return created;
 		const text = outputText(result);
-		if (text !== null) card.output = tail(text);
+		if (text !== null) card.output = toolOutputTail(text);
 		card.status = event.isError === true || event.error !== undefined && event.error !== null && event.error !== false ? "error" : "done";
 		const started = toolStarts.get(callId);
 		toolStarts.delete(callId);
@@ -344,6 +374,25 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 		return add({ id: `notice:${noticeCount}`, kind: "notice", text, thinking: "", createdAt: now().toISOString() });
 	}
 
+	function startBash(command: string): { id: string; message: ServerMessage } {
+		bashCount += 1;
+		const id = `bash:${bashCount}`;
+		const card: BashCard = { command, status: "running", exitCode: null };
+		const item: TranscriptItem = { id, kind: "bash", text: "", thinking: "", bash: card, createdAt: now().toISOString() };
+		return { id, message: add(item) };
+	}
+
+	function finishBash(id: string, outcome: BashOutcome): ServerMessage | null {
+		const item = byId.get(id);
+		if (!item?.bash) return null;
+		item.bash.status = outcome.status;
+		item.bash.exitCode = outcome.exitCode;
+		if (outcome.cancelled === true) item.bash.cancelled = true;
+		// omp cuts the output itself (and says so); the card keeps the end of whatever arrived.
+		item.text = bashText(outcome.output, outcome.truncated === true);
+		return { type: "item_update", item: copyOf(item) };
+	}
+
 	return {
 		handle(event) {
 			switch (event.type) {
@@ -373,5 +422,7 @@ export function createTranscript(options: { now?: () => Date } = {}): Transcript
 			};
 		},
 		appendNotice: addNotice,
+		startBash,
+		finishBash,
 	};
 }

@@ -2,6 +2,8 @@ import { useEffect, useState } from "preact/hooks";
 import type { DialogAnswer } from "../../shared/protocol";
 import type { DialogQuestion, DialogView } from "../../shared/types";
 import { type QuestionSelection, askAnswer, confirmAnswer, selectAnswer, textAnswer } from "../lib/dialog-answers";
+import { tapFeedback } from "../lib/haptics";
+import { StatusMark } from "./status-glyph";
 
 interface Props {
 	dialog: DialogView;
@@ -133,6 +135,9 @@ export function DialogPanel({ dialog, onAnswer, onDiscard }: Props) {
 	const answer = (value: DialogAnswer) => {
 		if (answered) return;
 		setAnswered(true);
+		// One door for every kind of answer, and the buzz sits inside the guard so a
+		// second tap on a question already answered cannot fire it again.
+		tapFeedback();
 		onAnswer(value);
 	};
 	const discard = () => {
@@ -145,7 +150,7 @@ export function DialogPanel({ dialog, onAnswer, onDiscard }: Props) {
 	const message = dialog.kind === "ask" ? "" : dialog.message;
 	return (
 		<section class="dialog" role="dialog" aria-label="Agent question">
-			<div class="dialog-head"><span class="glyph glyph-needs_answer" aria-hidden="true" />agent needs your answer</div>
+			<div class="dialog-head"><StatusMark status="needs_answer" />agent needs your answer</div>
 			{title ? <h2 class="dialog-title">{title}</h2> : null}
 			{message ? <p class="dialog-message">{message}</p> : null}
 			{dialog.kind === "confirm" ? (

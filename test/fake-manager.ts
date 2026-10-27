@@ -20,7 +20,8 @@ export function makeSummary(id: string, overrides: Partial<SessionSummary> = {})
 		title: `session ${id}`,
 		status: "idle",
 		running: true,
-		openAtLaptop: false,
+		openElsewhere: false,
+		canTakeOver: false,
 		sessionFile: null,
 		updatedAt: "2026-01-01T00:00:00.000Z",
 		...overrides,
@@ -35,7 +36,9 @@ export function makeSnapshot(id: string, overrides: Partial<SessionSnapshot> = {
 		subagents: [],
 		queued: { steering: [], followUp: [] },
 		status: { status: "idle", isSettled: true, hasPendingAsyncWork: false },
+		commands: [],
 		truncated: false,
+		readOnly: false,
 		...overrides,
 	};
 }
@@ -48,6 +51,8 @@ export class FakeManager implements SessionManagerPort {
 	listCalls = 0;
 	startCalls: StartSessionInput[] = [];
 	stopCalls: { sessionId: string; reason: StopReason }[] = [];
+	adoptCalls: string[] = [];
+	watchCalls: string[] = [];
 	deliverCalls: DeliverCall[] = [];
 	snapshotCalls: string[] = [];
 	shutdownCalls = 0;
@@ -56,6 +61,16 @@ export class FakeManager implements SessionManagerPort {
 	startResult: Result<SessionSummary> | ((input: StartSessionInput) => Result<SessionSummary>) = {
 		ok: true,
 		value: makeSummary("started"),
+	};
+	/** Result of adopt(); a function can compute it from the session file. */
+	adoptResult: Result<SessionSummary> | ((sessionFile: string) => Result<SessionSummary>) = {
+		ok: true,
+		value: makeSummary("adopted"),
+	};
+	/** Result of watch(); a function can compute it from the session file. */
+	watchResult: Result<SessionSummary> | ((sessionFile: string) => Result<SessionSummary>) = {
+		ok: true,
+		value: makeSummary("watched", { running: false, openElsewhere: true, canTakeOver: true }),
 	};
 	/** Result of deliver(); a function can compute it from the call. */
 	deliverResult: Delivery | ((sessionId: string, message: ClientMessage) => Delivery) = { status: "ok" };
@@ -91,6 +106,16 @@ export class FakeManager implements SessionManagerPort {
 		return typeof this.startResult === "function" ? this.startResult(input) : this.startResult;
 	}
 
+	async adopt(sessionFile: string): Promise<Result<SessionSummary>> {
+		this.adoptCalls.push(sessionFile);
+		return typeof this.adoptResult === "function" ? this.adoptResult(sessionFile) : this.adoptResult;
+	}
+
+	async watch(sessionFile: string): Promise<Result<SessionSummary>> {
+		this.watchCalls.push(sessionFile);
+		return typeof this.watchResult === "function" ? this.watchResult(sessionFile) : this.watchResult;
+	}
+
 	snapshot(sessionId: string): SessionSnapshot | null {
 		this.snapshotCalls.push(sessionId);
 		return this.snapshots.get(sessionId) ?? null;
@@ -114,7 +139,7 @@ export class FakeManager implements SessionManagerPort {
 		return typeof this.stopResult === "function" ? this.stopResult(sessionId) : this.stopResult;
 	}
 
-	runningIds(): string[] {
+	heldIds(): string[] {
 		return this.sessions.filter((s) => s.running).map((s) => s.id);
 	}
 

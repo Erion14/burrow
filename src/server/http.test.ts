@@ -8,6 +8,7 @@ import type { ApiErrorBody, BootstrapResponse } from "../shared/protocol";
 import type { DiffResponse } from "../shared/types";
 import type { BurrowConfig } from "./config";
 import { createHttpServer } from "./http";
+import type { FileListResponse } from "./repos/files";
 import { createHub, type Hub, type SocketData } from "./ws";
 
 const OWNER = "owner@example.com";
@@ -22,6 +23,8 @@ let hub: Hub;
 let server: Server<SocketData>;
 let diffCalls: string[];
 let diffImpl: (repoPath: string) => Promise<DiffResponse>;
+let fileCalls: { root: string; query: string; limit: number }[];
+let fileImpl: (root: string, query: string, limit: number) => Promise<FileListResponse>;
 
 function makeConfig(): BurrowConfig {
 	return {
@@ -70,6 +73,8 @@ beforeEach(async () => {
 	await writeFile(join(root, "secret.txt"), "secret");
 	diffCalls = [];
 	diffImpl = async (repoPath) => ({ repo: repoPath, files: [], truncated: false });
+	fileCalls = [];
+	fileImpl = async () => ({ items: [], truncated: false });
 	manager = new FakeManager();
 	hub = createHub({ manager, origin: ORIGIN, ownerLogin: OWNER });
 	server = createHttpServer({
@@ -79,6 +84,12 @@ beforeEach(async () => {
 		diff: (repoPath) => {
 			diffCalls.push(repoPath);
 			return diffImpl(repoPath);
+		},
+		fileIndex: {
+			list(root, query, limit) {
+				fileCalls.push({ root, query, limit });
+				return fileImpl(root, query, limit);
+			},
 		},
 	});
 });
@@ -95,8 +106,11 @@ describe("auth", () => {
 			["GET", "/health"],
 			["GET", "/api/bootstrap"],
 			["POST", "/api/sessions", { repoPath: repoDir }],
+			["POST", "/api/sessions/adopt", { sessionFile: "/x/y.jsonl" }],
+			["POST", "/api/sessions/watch", { sessionFile: "/x/y.jsonl" }],
 			["POST", "/api/sessions/s1/stop", {}],
 			["GET", "/api/sessions/s1/diff"],
+			["GET", "/api/files?session=s1"],
 		];
 		for (const [method, path, body] of calls) {
 			const res = await api(path, { method, body: body === undefined ? undefined : JSON.stringify(body) }, false);
@@ -105,9 +119,12 @@ describe("auth", () => {
 		}
 		expect(manager.listCalls).toBe(0);
 		expect(manager.startCalls).toHaveLength(0);
+		expect(manager.adoptCalls).toHaveLength(0);
+		expect(manager.watchCalls).toHaveLength(0);
 		expect(manager.stopCalls).toHaveLength(0);
 		expect(manager.snapshotCalls).toHaveLength(0);
 		expect(diffCalls).toHaveLength(0);
+		expect(fileCalls).toHaveLength(0);
 	});
 
 	test("a different identity is 403", async () => {
@@ -165,6 +182,9 @@ describe("origin on state-changing requests", () => {
 	test("GET needs no Origin", async () => {
 		expect((await raw("/api/bootstrap", "GET", {})).status).toBe(200);
 		expect((await raw("/health", "GET", { origin: "https://evil.example" })).status).toBe(200);
+		const files = await raw("/api/files?session=nope", "GET", {});
+		expect(files.status).toBe(404);
+		expect((await errorBody(files)).code).toBe("session_not_found");
 	});
 });
 
@@ -240,10 +260,10 @@ describe("api", () => {
 	});
 
 	test("POST /api/sessions answers 409 when the manager reports a session conflict", async () => {
-		manager.startResult = { ok: false, error: { code: "session_conflict", message: "open at the laptop" } };
+		manager.startResult = { ok: false, error: { code: "session_conflict", message: "open at the host" } };
 		const res = await post("/api/sessions", { repoPath: repoDir });
 		expect(res.status).toBe(409);
-		expect(await errorBody(res)).toEqual({ code: "session_conflict", message: "open at the laptop" });
+		expect(await errorBody(res)).toEqual({ code: "session_conflict", message: "open at the host" });
 		expect(manager.startCalls).toHaveLength(1);
 	});
 
@@ -252,6 +272,72 @@ describe("api", () => {
 		const res = await post("/api/sessions", { repoPath: repoDir });
 		expect(res.status).toBe(400);
 		expect((await errorBody(res)).code).toBe("start_failed");
+	});
+
+	test("POST /api/sessions/adopt answers the taken over session", async () => {
+		const summary = makeSummary("taken", { repo: repoDir, sessionFile: "/x/y.jsonl" });
+		manager.adoptResult = { ok: true, value: summary };
+		const res = await post("/api/sessions/adopt", { sessionFile: "/x/y.jsonl" });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ session: summary });
+		expect(manager.adoptCalls).toEqual(["/x/y.jsonl"]);
+	});
+
+	test("POST /api/sessions/adopt answers 409 when the holder cannot be stopped", async () => {
+		for (const code of ["takeover_failed", "holder_not_omp"]) {
+			manager.adoptResult = { ok: false, error: { code, message: "still held" } };
+			const res = await post("/api/sessions/adopt", { sessionFile: "/x/y.jsonl" });
+			expect(res.status).toBe(409);
+			expect(await errorBody(res)).toEqual({ code, message: "still held" });
+		}
+	});
+
+	test("POST /api/sessions/watch answers the followed session", async () => {
+		const summary = makeSummary("watched", { running: false, openElsewhere: true, canTakeOver: true, sessionFile: "/x/y.jsonl" });
+		manager.watchResult = { ok: true, value: summary };
+		const res = await post("/api/sessions/watch", { sessionFile: "/x/y.jsonl" });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ session: summary });
+		expect(manager.watchCalls).toEqual(["/x/y.jsonl"]);
+	});
+
+	test("POST /api/sessions/watch answers 400 for a refused file and for a running session", async () => {
+		for (const code of ["invalid_session_file", "repo_not_allowed", "already_running"]) {
+			manager.watchResult = { ok: false, error: { code, message: "no" } };
+			const res = await post("/api/sessions/watch", { sessionFile: "/x/y.jsonl" });
+			expect(res.status).toBe(400);
+			expect((await errorBody(res)).code).toBe(code);
+		}
+	});
+
+	test("POST /api/sessions/watch with a bad body is 400 and watches nothing", async () => {
+		for (const body of [{}, { sessionFile: "" }, { sessionFile: 7 }]) {
+			const res = await post("/api/sessions/watch", body);
+			expect(res.status).toBe(400);
+			expect((await errorBody(res)).code).toBe("bad_request");
+		}
+		expect(manager.watchCalls).toHaveLength(0);
+	});
+
+	test("POST /api/sessions/adopt answers 400 for a refused file", async () => {
+		for (const code of ["invalid_session_file", "repo_not_allowed"]) {
+			manager.adoptResult = { ok: false, error: { code, message: "no" } };
+			const res = await post("/api/sessions/adopt", { sessionFile: "/x/y.jsonl" });
+			expect(res.status).toBe(400);
+			expect((await errorBody(res)).code).toBe(code);
+		}
+	});
+
+	test("POST /api/sessions/adopt with a bad body is 400 and adopts nothing", async () => {
+		for (const body of [{}, { sessionFile: "" }, { sessionFile: 3 }]) {
+			const res = await post("/api/sessions/adopt", body);
+			expect(res.status).toBe(400);
+			expect((await errorBody(res)).code).toBe("bad_request");
+		}
+		expect((await api("/api/sessions/adopt", { method: "POST", body: "{nope" })).status).toBe(400);
+		expect((await api("/api/sessions/adopt")).status).toBe(405);
+		expect(manager.adoptCalls).toHaveLength(0);
+		expect(manager.watchCalls).toHaveLength(0);
 	});
 
 	test("POST /api/sessions/:id/stop stops with reason handoff", async () => {
@@ -315,6 +401,68 @@ describe("api", () => {
 		const text = await res.text();
 		expect(text).not.toContain("    at ");
 		expect((JSON.parse(text) as ApiErrorBody).error.code).toBe("internal_error");
+	});
+});
+
+describe("files", () => {
+	// Called from every test below, so the snapshot shape stays in one place.
+	function withSession(): void {
+		manager.snapshots.set("s1", makeSnapshot("s1", { session: makeSummary("s1", { repo: repoDir }) }));
+	}
+
+	test("GET /api/files ranks the session repo with the query and the limit", async () => {
+		withSession();
+		const items = [
+			{ path: "src", dir: true },
+			{ path: "src/foo.ts", dir: false },
+		];
+		fileImpl = async () => ({ items, truncated: true });
+		const res = await api("/api/files?session=s1&q=src&limit=5");
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ items, truncated: true });
+		expect(fileCalls).toEqual([{ root: repoDir, query: "src", limit: 5 }]);
+	});
+
+	test("the defaults are an empty query and 20 rows", async () => {
+		withSession();
+		const res = await api("/api/files?session=s1");
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ items: [], truncated: false });
+		expect(fileCalls).toEqual([{ root: repoDir, query: "", limit: 20 }]);
+	});
+
+	test("an unknown session is 404 and the index never runs", async () => {
+		const res = await api("/api/files?session=nope&q=src");
+		expect(res.status).toBe(404);
+		expect((await errorBody(res)).code).toBe("session_not_found");
+		expect(fileCalls).toHaveLength(0);
+	});
+
+	test("a bad limit is 400 and the index never runs", async () => {
+		withSession();
+		for (const limit of ["0", "1000", "-1", "abc", "2.5", ""]) {
+			const res = await api(`/api/files?session=s1&limit=${limit}`);
+			expect(res.status).toBe(400);
+			expect((await errorBody(res)).code).toBe("bad_request");
+		}
+		expect(fileCalls).toHaveLength(0);
+	});
+
+	test("the limit bounds are 1 and 100", async () => {
+		withSession();
+		for (const limit of ["1", "100"]) {
+			expect((await api(`/api/files?session=s1&limit=${limit}`)).status).toBe(200);
+		}
+		expect(fileCalls.map((call) => call.limit)).toEqual([1, 100]);
+	});
+
+	test("a missing session and a POST are refused", async () => {
+		withSession();
+		expect((await api("/api/files")).status).toBe(400);
+		const wrong = await api("/api/files?session=s1", { method: "POST" });
+		expect(wrong.status).toBe(405);
+		expect((await errorBody(wrong)).code).toBe("method_not_allowed");
+		expect(fileCalls).toHaveLength(0);
 	});
 });
 

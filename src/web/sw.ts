@@ -35,7 +35,7 @@ function isStatic(pathname: string): boolean {
 	return pathname.startsWith("/assets/") || pathname.startsWith("/icons/") || pathname === "/manifest.webmanifest";
 }
 
-/** Bundle files the built index.html references (entry, css, preloaded chunks). */
+/** Bundle files the built index.html references: entry, css, split chunks, font preloads. */
 function assetsIn(html: string): string[] {
 	const found = new Set<string>();
 	for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) found.add(match[1]!);

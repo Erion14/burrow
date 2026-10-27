@@ -28,6 +28,17 @@ export interface SessionManagerPort {
 	/** Running sessions plus recent session files whose header cwd is allowlisted. */
 	list(): Promise<SessionSummary[]>;
 	start(input: StartSessionInput): Promise<Result<SessionSummary>>;
+	/**
+	 * Resumes a session another omp at the host holds open, after stopping that omp and
+	 * waiting for it to let go of the file. A session Burrow already runs is answered as is.
+	 */
+	adopt(sessionFile: string): Promise<Result<SessionSummary>>;
+	/**
+	 * Follows a session file another omp at the host holds, read only: nothing is spawned and
+	 * nothing is written. The phone reads that transcript and cannot prompt it; take over is
+	 * what turns the same session writable.
+	 */
+	watch(sessionFile: string): Promise<Result<SessionSummary>>;
 	/** null when no such session is known. */
 	snapshot(sessionId: string): SessionSnapshot | null;
 	/** sessionId is null for messages about the list itself. Returns an unsubscribe function. */
@@ -35,7 +46,7 @@ export interface SessionManagerPort {
 	/** Applies one phone message; a repeated clientId is answered duplicate and applied once. */
 	deliver(sessionId: string, message: ClientMessage): Promise<Delivery>;
 	stop(sessionId: string, reason: StopReason): Promise<Result<null>>;
-	/** Session ids Burrow currently runs a process for. */
-	runningIds(): string[];
+	/** Session ids Burrow holds state for: the processes it runs and the files it follows read only. */
+	heldIds(): string[];
 	shutdown(): Promise<void>;
 }

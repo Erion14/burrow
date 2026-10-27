@@ -43,7 +43,7 @@ export function createIdleStopper(options: IdleStopperOptions): IdleStopper {
 	async function evaluate(): Promise<string[]> {
 		const stopped: string[] = [];
 		try {
-			const running = manager.runningIds();
+			const running = manager.heldIds();
 			const runningSet = new Set(running);
 			for (const id of eligibleSince.keys()) {
 				if (!runningSet.has(id)) eligibleSince.delete(id);

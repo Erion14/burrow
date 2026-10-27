@@ -1,0 +1,53 @@
+/* The sessions screen's own bits: the search row that sits under the bar row. */
+
+.sessions-search-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0 12px 8px;
+}
+
+/* A search field, not a text one: the phone keyboard says "search". The global rules
+   only dress input[type="text"], so the box is spelled out here to match them. */
+.sessions-search {
+	flex: 1;
+	min-width: 0;
+	min-height: var(--tap);
+	padding: 0.6rem 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--tool-pending-bg);
+	color: var(--text);
+	font: 16px/1.4 var(--mono);
+}
+
+.sessions-search::placeholder {
+	color: var(--dim);
+}
+
+.sessions-search:focus-visible {
+	border-color: var(--accent);
+	outline-offset: 0;
+}
+
+/* The row draws its own clear button, so the browser's extra one would be a second. */
+.sessions-search::-webkit-search-cancel-button {
+	display: none;
+}
+
+.sessions-search-clear {
+	flex: none;
+}
+
+/* Held by another process and readable: the note keeps the laptop symbol, and the
+   tag says pressing the row opens the read only view rather than sending anything. */
+.read-only-tag {
+	flex: none;
+	padding: 0 8px;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 700;
+	line-height: 24px;
+}

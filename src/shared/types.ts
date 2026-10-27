@@ -12,14 +12,19 @@ export interface SessionSummary {
 	status: SessionStatus;
 	/** Burrow owns a live omp process for this session. */
 	running: boolean;
-	/** Another process (omp started at the laptop) holds the session file open. */
-	openAtLaptop: boolean;
+	/** Another process (omp started at the host) holds the session file open. */
+	openElsewhere: boolean;
+	/**
+	 * The holder is an omp process, so stopping it lets Burrow resume the session
+	 * here. Never true unless openElsewhere is.
+	 */
+	canTakeOver: boolean;
 	sessionFile: string | null;
 	/** ISO-8601 UTC. */
 	updatedAt: string;
 }
 
-export type TranscriptItemKind = "user" | "assistant" | "tool" | "notice";
+export type TranscriptItemKind = "user" | "assistant" | "tool" | "notice" | "bash";
 
 export interface ToolCard {
 	id: string;
@@ -32,6 +37,15 @@ export interface ToolCard {
 	durationMs?: number;
 }
 
+/** A `!command` run through omp's `bash` RPC, shown as a terminal card. */
+export interface BashCard {
+	command: string;
+	status: "running" | "done" | "error";
+	/** null while it runs, or when omp reported no code (a cancellation or a timeout). */
+	exitCode: number | null;
+	cancelled?: boolean;
+}
+
 export interface TranscriptItem {
 	id: string;
 	kind: TranscriptItemKind;
@@ -39,6 +53,8 @@ export interface TranscriptItem {
 	/** Empty string when the message carries no thinking. */
 	thinking: string;
 	tool?: ToolCard;
+	/** Set on `bash` items: the command and how it ended. */
+	bash?: BashCard;
 	createdAt: string;
 }
 
@@ -76,10 +92,43 @@ export interface QueuedMessages {
 	followUp: string[];
 }
 
+export interface TodoPhaseView {
+	name: string;
+	tasks: { content: string; status: string }[];
+}
+
 export interface StatusView {
 	status: SessionStatus;
 	isSettled: boolean;
 	hasPendingAsyncWork: boolean;
+	/**
+	 * From omp's `get_state`. A field stays absent until a read reports it, so the
+	 * phone can tell "omp has not told us" from "no value"; a later read that omits
+	 * the field keeps the value the previous one reported.
+	 */
+	model?: { provider: string; id: string; name: string } | null;
+	thinkingLevel?: string | null;
+	contextUsage?: { tokens: number; contextWindow: number; percent: number } | null;
+	todos?: TodoPhaseView[];
+	goal?: { objective: string; state: string } | null;
+}
+
+/** One omp slash command, as the phone's `/` completion menu shows it. */
+export interface CommandView {
+	name: string;
+	description: string;
+	/** Placeholder for the first argument, from omp's `input.hint`. */
+	hint: string;
+	subcommands: { name: string; description: string }[];
+}
+
+/** One selectable model, from `get_available_models`. */
+export interface ModelView {
+	provider: string;
+	id: string;
+	name: string;
+	contextWindow: number | null;
+	reasoning: boolean;
 }
 
 export interface SessionSnapshot {
@@ -89,8 +138,16 @@ export interface SessionSnapshot {
 	subagents: SubagentView[];
 	queued: QueuedMessages;
 	status: StatusView;
+	/** omp's slash commands; empty until the update frame or the setup request answered. */
+	commands: CommandView[];
 	/** Older transcript items were dropped from the snapshot. */
 	truncated: boolean;
+	/**
+	 * Built from the session file another process writes at the host, rather than
+	 * from a process Burrow owns: nothing to prompt, nothing to answer, and the
+	 * phone shows no composer.
+	 */
+	readOnly: boolean;
 }
 
 export interface RepoOption {

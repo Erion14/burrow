@@ -37,6 +37,27 @@
  * export: pageBg #080C0A, cardBg #101613, infoBg #172018
  * terminal: background #080c0a, foreground #d4ddd5, widget deepGreen
  */
+
+/*
+ * The bundled subset (src/web/fonts) carries the nerd icon tables, so a phone
+ * without a local Nerd Font still renders every glyph instead of tofu.
+ */
+@font-face {
+	font-family: "Burrow Mono";
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url("./fonts/burrow-mono-regular.woff2") format("woff2");
+}
+
+@font-face {
+	font-family: "Burrow Mono";
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url("./fonts/burrow-mono-bold.woff2") format("woff2");
+}
+
 :root {
 	color-scheme: dark;
 
@@ -103,7 +124,7 @@
 	--tap: 44px;
 	--row-h: 48px;
 	--status-h: 24px;
-	--mono: "JetBrainsMono Nerd Font", "JetBrains Mono", "Cascadia Mono", ui-monospace, "Roboto Mono", "Droid Sans Mono", monospace;
+	--mono: "Burrow Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", "Cascadia Mono", ui-monospace, "Roboto Mono", "Droid Sans Mono", monospace;
 	--safe-top: env(safe-area-inset-top);
 	--safe-bottom: env(safe-area-inset-bottom);
 	--safe-left: env(safe-area-inset-left);
@@ -203,73 +224,80 @@ kbd {
 	white-space: nowrap;
 }
 
-/* Glyphs: state marks are CSS content so they share one vocabulary and the spinner can turn. */
-.glyph,
-.tool-mark,
+/*
+ * Icons: every glyph the UI draws is a text node from lib/symbols.ts, so one rule carries the
+ * box, the family and the size while the tone and state rules below carry only the colour. The
+ * bundled family has to be asked for by name here: a fallback monospace renders the nerd range
+ * as tofu.
+ */
+.icon {
+	display: inline-block;
+	flex: none;
+	width: 1.4ch;
+	font-family: var(--mono);
+	font-size: 1.05em;
+	font-style: normal;
+	font-weight: 700;
+	line-height: 1;
+	text-align: center;
+}
+
+/* The loading spinner is the one mark with no text node behind it, so its frames are content. */
 .spin {
 	display: inline-block;
 	flex: none;
 	width: 1.4ch;
-	text-align: center;
+	color: var(--accent);
 	font-style: normal;
 	font-weight: 700;
+	text-align: center;
 }
 
-.glyph-working::before,
-.tone-running::before,
 .spin::before {
 	content: "⠋";
 	animation: braille 0.8s steps(1) infinite;
 }
 
+/*
+ * "working" spins a frame at a time. The frames have to live in a generated box: content only
+ * animates on ::before, and on a plain element it computes to normal. So the element keeps the
+ * text node from lib/symbols.ts, paints it transparent while the animation runs, and the pseudo
+ * draws the frames over it. Reduced motion drops the pseudo and shows the node, which is the
+ * first braille frame.
+ */
 .glyph-working,
-.tone-running,
-.spin {
-	color: var(--accent);
+.tone-running {
+	position: relative;
+	color: transparent;
 }
 
-.glyph-needs_answer::before {
-	content: "◆";
+.glyph-working::before,
+.tone-running::before {
+	position: absolute;
+	inset: 0;
+	color: var(--accent);
+	content: "⠋";
+	animation: braille 0.8s steps(1) infinite;
 }
 
 .glyph-needs_answer {
 	color: var(--warning);
 }
 
-.glyph-idle::before {
-	content: "●";
-}
-
 .glyph-idle {
 	color: var(--success);
-}
-
-.glyph-stopped::before {
-	content: "○";
 }
 
 .glyph-stopped {
 	color: var(--dim);
 }
 
-.tone-done::before {
-	content: "✓";
-}
-
 .tone-done {
 	color: var(--success);
 }
 
-.tone-error::before {
-	content: "✗";
-}
-
 .tone-error {
 	color: var(--error);
-}
-
-.tone-other::before {
-	content: "◇";
 }
 
 .tone-other {
@@ -290,8 +318,17 @@ kbd {
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.glyph-working,
+	.tone-running {
+		color: var(--accent);
+	}
+
 	.glyph-working::before,
-	.tone-running::before,
+	.tone-running::before {
+		content: none;
+		animation: none;
+	}
+
 	.spin::before {
 		animation: none;
 		content: "●";
@@ -322,20 +359,14 @@ kbd {
 	color: var(--dim);
 }
 
+/* The chevron is one icon turned by a rule, so the open state needs no second glyph. */
 .chev {
-	flex: none;
-	width: 1.4ch;
 	color: var(--dim);
-	text-align: center;
 }
 
-.chev::before {
-	content: "▸";
-}
-
-details[open] > summary .chev::before,
-[aria-expanded="true"] > .chev::before {
-	content: "▾";
+details[open] > summary .chev,
+[aria-expanded="true"] > .chev {
+	transform: rotate(90deg);
 }
 
 /* Top bar: a nav row over an omp status line. */
@@ -361,6 +392,35 @@ details[open] > summary .chev::before,
 	flex: 1;
 	min-width: 0;
 	padding: 0 6px;
+	font-size: 14.5px;
+}
+
+/* The title is the rename control: a button, so the whole line is the tap target
+   and the keyboard can still reach it. */
+.bar-title-btn {
+	width: 100%;
+	min-height: var(--tap);
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.bar-title-input {
+	flex: 1;
+	min-width: 0;
+	min-height: var(--tap);
+	margin: 0 4px;
+	padding: 0 6px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: var(--canopy-black);
+	color: var(--text);
+	font: inherit;
 	font-size: 14.5px;
 }
 
@@ -403,38 +463,25 @@ details[open] > summary .chev::before,
 }
 
 .conn {
+	display: inline-flex;
 	flex: none;
+	align-items: center;
+	gap: 0.5ch;
 	margin-left: auto;
 	padding-left: 1ch;
 	font-size: 11.5px;
-}
-
-.conn::before {
-	margin-right: 0.5ch;
 }
 
 .conn-open {
 	color: var(--status-line-git-clean);
 }
 
-.conn-open::before {
-	content: "●";
-}
-
 .conn-connecting {
 	color: var(--status-line-git-dirty);
 }
 
-.conn-connecting::before {
-	content: "◌";
-}
-
 .conn-closed {
 	color: var(--error);
-}
-
-.conn-closed::before {
-	content: "○";
 }
 
 .chip {
@@ -482,17 +529,6 @@ details[open] > summary .chev::before,
 	touch-action: manipulation;
 }
 
-.btn svg {
-	flex: none;
-	width: 20px;
-	height: 20px;
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 2;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-}
-
 .btn:active:not(:disabled) {
 	background: var(--selected-bg);
 }
@@ -518,11 +554,6 @@ details[open] > summary .chev::before,
 	background: transparent;
 	color: var(--error);
 	font-size: 13px;
-}
-
-.btn-danger svg {
-	width: 16px;
-	height: 16px;
 }
 
 .btn-quiet {
@@ -654,20 +685,10 @@ textarea {
 	font-size: 13.5px;
 }
 
-.panel-laptop {
+.panel-elsewhere {
 	color: var(--dim);
 	font-style: italic;
 	font-weight: 400;
-}
-
-.panel-laptop svg,
-.laptop-note svg {
-	flex: none;
-	width: 16px;
-	height: 16px;
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 2;
 }
 
 .center-screen {
@@ -855,7 +876,7 @@ button.row:active {
 	color: var(--dim);
 }
 
-.laptop-note {
+.elsewhere-note {
 	display: inline-flex;
 	flex: none;
 	align-items: center;
@@ -863,11 +884,6 @@ button.row:active {
 	margin-left: auto;
 	color: var(--dim);
 	font-size: 12px;
-}
-
-.laptop-note svg {
-	width: 14px;
-	height: 14px;
 }
 
 .empty {
@@ -905,7 +921,31 @@ button.row:active {
 }
 
 .msg {
+	position: relative;
 	overflow-wrap: anywhere;
+}
+
+/* The long press landed: the bubble is marked so a copy of a long message is
+   still visible when the chip itself has scrolled past the top edge. */
+.msg.is-copied {
+	outline: 1px solid var(--success);
+	outline-offset: 2px;
+}
+
+/* Out of the hit-test path so the second of feedback can never swallow the next
+   tap, or the drag that starts a text selection inside the bubble. It rides the
+   top edge so it never covers the first line of the text it just copied. */
+.copied-chip {
+	position: absolute;
+	top: -9px;
+	right: 8px;
+	padding: 0 5px;
+	border: 1px solid var(--success);
+	border-radius: 9px;
+	background: var(--canopy-black);
+	color: var(--success);
+	font: 10.5px/1.6 var(--mono);
+	pointer-events: none;
 }
 
 .msg-user {
@@ -1316,6 +1356,7 @@ button.row:active {
 
 /* Composer: omp's prompt line. */
 .composer {
+	position: relative;
 	flex: none;
 	padding: 8px 10px calc(2px + var(--safe-bottom));
 	border-top: 1px solid var(--border);
@@ -1388,6 +1429,175 @@ button.row:active {
 	font-size: 11.5px;
 	overflow: hidden;
 	white-space: nowrap;
+}
+
+/* The completion menu is anchored above the composer rather than placed inside
+   its flow: a list suddenly opening must not resize the transcript the message
+   above it is being written against. */
+.composer .completion-menu {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 100%;
+	z-index: 4;
+}
+
+/* Bash mode: a `!` message runs in the shell, so the prompt is tinted with the
+   accent the theme already reserves for bash. */
+.composer.is-bash .prompt {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 8%, var(--canopy-black));
+}
+
+/* The stop and send row below the key bar, with the queue's restore to its left. */
+.composer-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-top: 6px;
+}
+
+.btn-restore {
+	/* Small and out of the way: it is a rare repair, not a primary action. */
+	min-height: 32px;
+	margin-right: auto;
+	padding: 0 8px;
+	font-size: 11.5px;
+}
+
+/* A queued chip is a button: a tap removes it, a long press promotes it, so it
+   needs the resets a li did not. */
+.queued li {
+	display: flex;
+	min-width: 0;
+}
+
+.queued-chip {
+	/* The chip styling of the queue stays where it was; these are the resets a
+	   button needs and the gestures the tap and the long press rely on. */
+	font: inherit;
+	cursor: pointer;
+	touch-action: manipulation;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-tap-highlight-color: transparent;
+}
+
+/* The agents list: the row opens the steer box, a running agent can be stopped. */
+.agent-open {
+	display: flex;
+	flex: 1;
+	align-items: baseline;
+	gap: 1ch;
+	min-width: 0;
+	min-height: 24px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.agent-cancel {
+	flex: none;
+	min-width: 32px;
+	min-height: 32px;
+	padding: 0;
+}
+
+.agent.is-steering {
+	flex-wrap: wrap;
+}
+
+.agent-steer {
+	flex: 1 1 100%;
+	min-height: 36px;
+	margin: 4px 0;
+	padding: 0 8px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: var(--canopy-black);
+	color: var(--text);
+	font: inherit;
+	font-size: 12.5px;
+}
+
+/* A `!command` in the transcript: the command line with its `$` prompt, how it
+   ended, and the output tail the server already bounded. */
+.bash {
+	flex: none;
+	border: 1px solid var(--border);
+	border-left: 2px solid var(--accent);
+	border-radius: 4px;
+	background: var(--terminal-bg);
+	font-size: 12.5px;
+	overflow: hidden;
+}
+
+.bash-running {
+	border-left-color: var(--warning);
+}
+
+.bash-error {
+	border-left-color: var(--error);
+}
+
+.bash-line {
+	display: flex;
+	align-items: center;
+	gap: 1ch;
+	margin: 0;
+	padding: 6px 10px;
+	font: 12.5px/1.4 var(--mono);
+}
+
+.bash-prompt {
+	flex: none;
+	color: var(--accent);
+	font-weight: 700;
+}
+
+.bash-command {
+	flex: 1 1 auto;
+	color: var(--text);
+}
+
+.bash-exit {
+	flex: none;
+	padding: 0 5px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--muted) 12%, transparent);
+	color: var(--muted);
+	font-size: 11px;
+	line-height: 17px;
+}
+
+.bash-exit-running {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5ch;
+	color: var(--warning);
+}
+
+.bash-error .bash-exit {
+	background: color-mix(in srgb, var(--error) 14%, transparent);
+	color: var(--error);
+}
+
+.bash-out {
+	max-height: 40vh;
+	margin: 0;
+	padding: 8px 10px;
+	border-top: 1px solid var(--border);
+	color: var(--tool-output);
+	font: 12px/1.45 var(--mono);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 /* Diff: a pager. Long lines wrap instead of scrolling sideways. */
@@ -1663,4 +1873,36 @@ button.row:active {
 
 .ws-chip.is-on .ws-count {
 	color: var(--accent);
+}
+
+/* A read only view of a session another process at the host writes: it takes the
+   composer's place, so the absence of a message box is the point, not an omission. */
+.chip-readonly {
+	flex: none;
+	align-self: center;
+	border: 1px solid var(--warning);
+	color: var(--warning);
+}
+
+.read-only-bar {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+	border-top: 1px solid var(--border);
+	background: var(--panel);
+}
+
+.read-only-note {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.btn-take-over,
+.btn-take-over:hover {
+	align-self: flex-start;
 }
