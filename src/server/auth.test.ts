@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { authorizeRequest, denialResponse } from "./auth";
 import type { BurrowConfig } from "./config";
 
-const config = { ownerLogin: "Owner@Example.com", origin: "https://laptop.tailnet.ts.net" } as BurrowConfig;
+const config = { ownerLogin: "Owner@Example.com", origin: "https://host.tailnet.ts.net" } as BurrowConfig;
 
 function req(headers: Record<string, string>): Request {
 	return new Request("http://127.0.0.1:7470/", { headers });

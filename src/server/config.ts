@@ -7,7 +7,7 @@ import { join } from "node:path";
 export interface BurrowConfig {
 	port: number;
 	wakePort: number;
-	/** Tailscale login of the laptop's owner; the only accepted caller. */
+	/** Tailscale login of the host's owner; the only accepted caller. */
 	ownerLogin: string;
 	/** Exact Origin accepted on WebSocket upgrades, for example https://host.tailnet.ts.net */
 	origin: string;
@@ -25,6 +25,13 @@ export interface BurrowConfig {
 export interface TailscaleIdentity {
 	login: string;
 	dnsName: string;
+}
+
+export interface DetectTailscaleOptions {
+	run?: () => Promise<{ code: number; stdout: string; stderr: string }>;
+	attempts?: number;
+	delayMs?: number;
+	sleep?: (ms: number) => Promise<void>;
 }
 
 export const DEFAULT_PORT = 7470;
@@ -53,24 +60,51 @@ export async function readTextFile(path: string): Promise<string | null> {
 	return await file.text();
 }
 
-/**
- * Reads the laptop's own Tailscale identity from `tailscale status --json`.
- * `Self.UserID` maps to the login in the `User` map; `Self.DNSName` carries a
- * trailing dot that the Origin header does not.
- */
-export async function detectTailscaleIdentity(): Promise<TailscaleIdentity> {
+/** One `tailscale status --json` call, injectable so tests can script the reply. */
+async function readTailscaleStatus(): Promise<{ code: number; stdout: string; stderr: string }> {
 	const proc = Bun.spawn(["tailscale", "status", "--json"], { stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-	if (code !== 0) throw new Error(`tailscale status failed (${code}): ${stderr.trim()}`);
-	const status = JSON.parse(stdout) as {
-		Self?: { UserID?: number; DNSName?: string };
-		User?: Record<string, { LoginName?: string }>;
-	};
-	const userId = status.Self?.UserID;
-	const login = userId === undefined ? undefined : status.User?.[String(userId)]?.LoginName;
-	const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
-	if (!login || !dnsName) throw new Error("tailscale status --json carried no self login or DNS name");
-	return { login, dnsName };
+	return { code, stdout, stderr };
+}
+
+/**
+ * Reads the host's own Tailscale identity from `tailscale status --json`.
+ * `Self.UserID` maps to the login in the `User` map; `Self.DNSName` carries a
+ * trailing dot that the Origin header does not.
+ *
+ * Both services run this at startup, and at boot tailscaled may not have
+ * reported a login yet, so it retries for a couple of minutes instead of
+ * leaving the phone with nothing to wake.
+ */
+export async function detectTailscaleIdentity(options: DetectTailscaleOptions = {}): Promise<TailscaleIdentity> {
+	const attempts = options.attempts ?? 30;
+	const delayMs = options.delayMs ?? 2000;
+	const run = options.run ?? readTailscaleStatus;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+	let last = "no attempt was made";
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		try {
+			const { code, stdout, stderr } = await run();
+			if (code !== 0) throw new Error(`tailscale status failed (${code}): ${stderr.trim()}`);
+			const status = JSON.parse(stdout) as {
+				Self?: { UserID?: number; DNSName?: string };
+				User?: Record<string, { LoginName?: string }>;
+			};
+			const userId = status.Self?.UserID;
+			const login = userId === undefined ? undefined : status.User?.[String(userId)]?.LoginName;
+			const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
+			if (!login || !dnsName) throw new Error("tailscale status --json carried no self login or DNS name");
+			return { login, dnsName };
+		} catch (error) {
+			last = error instanceof Error ? error.message : String(error);
+			if (attempt < attempts) {
+				console.log(`tailscale identity not ready (${last}), retrying in ${delayMs} ms`);
+				await sleep(delayMs);
+			}
+		}
+	}
+	throw new Error(`tailscale identity unavailable after ${attempts} attempts: ${last}`);
 }
 
 function intFromEnv(value: string | undefined, fallback: number): number {

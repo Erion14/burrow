@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, parseLineFile, splitCommand } from "./config";
+import { detectTailscaleIdentity, loadConfig, parseLineFile, splitCommand } from "./config";
 
 let dir: string;
 beforeEach(() => {
@@ -94,5 +94,44 @@ describe("loadConfig", () => {
 
 	test("invalid BURROW_PORT throws", async () => {
 		await expect(loadConfig({ ...identity, BURROW_CONFIG_DIR: dir, BURROW_PORT: "abc" })).rejects.toThrow();
+	});
+});
+
+describe("detectTailscaleIdentity", () => {
+	function status(login: string | null, dnsName: string | null): string {
+		return JSON.stringify({
+			Self: { UserID: login === null ? undefined : 42, DNSName: dnsName },
+			User: login === null ? {} : { "42": { LoginName: login } },
+		});
+	}
+
+	test("waits for tailscaled at boot and retries until an identity appears", async () => {
+		const replies = [
+			{ code: 0, stdout: JSON.stringify({ Self: {}, User: {} }), stderr: "" },
+			{ code: 1, stdout: "", stderr: "tailscale is starting" },
+			{ code: 0, stdout: status("owner@example.com", "host.tailnet.ts.net."), stderr: "" },
+		];
+		const sleeps: number[] = [];
+		const identity = await detectTailscaleIdentity({
+			run: async () => replies.shift()!,
+			attempts: 5,
+			delayMs: 25,
+			sleep: async (ms) => {
+				sleeps.push(ms);
+			},
+		});
+		expect(identity).toEqual({ login: "owner@example.com", dnsName: "host.tailnet.ts.net" });
+		expect(sleeps).toEqual([25, 25]);
+	});
+
+	test("gives up with the last reason after the attempts run out", async () => {
+		await expect(
+			detectTailscaleIdentity({
+				run: async () => ({ code: 0, stdout: JSON.stringify({ Self: {}, User: {} }), stderr: "" }),
+				attempts: 3,
+				delayMs: 1,
+				sleep: async () => {},
+			}),
+		).rejects.toThrow(/after 3 attempts/);
 	});
 });

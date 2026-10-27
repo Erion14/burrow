@@ -1,7 +1,7 @@
 // Tailscale identity is the whole of Burrow's auth. `tailscale serve` injects
 // Tailscale-User-Login for every proxied request, so a request without it did
 // not come through the proxy. Binding to 127.0.0.1 is not auth on its own: a
-// page in the laptop's browser can reach the loopback port directly, which is
+// page in the host's browser can reach the loopback port directly, which is
 // also why a WebSocket upgrade additionally has to carry the Burrow Origin.
 // The identity header is also added to cross-site requests from any page open
 // in the owner's browser (a form POST or a no-cors fetch needs no preflight),
@@ -30,7 +30,7 @@ export function authorizeRequest(req: Request, config: BurrowConfig, options: Au
 	if (login === null || login.toLowerCase() !== config.ownerLogin.toLowerCase()) {
 		return {
 			code: "forbidden_identity",
-			message: `requests need a ${IDENTITY_HEADER} header matching the laptop owner over Tailscale`,
+			message: `requests need a ${IDENTITY_HEADER} header matching the host owner over Tailscale`,
 		};
 	}
 	const origin = req.headers.get("origin");

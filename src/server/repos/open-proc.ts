@@ -8,7 +8,7 @@ export interface OpenProcOptions {
 
 /**
  * Maps session file path to the pid holding it open. omp keeps its session file
- * open, so /proc/<pid>/fd is how a session at the laptop is detected.
+ * open, so /proc/<pid>/fd is how a session at the host is detected.
  */
 export async function sessionFileOwners(
 	sessionsDir: string,
